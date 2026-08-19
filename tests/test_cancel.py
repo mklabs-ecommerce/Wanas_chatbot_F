@@ -301,3 +301,12 @@ def test_the_prompt_covers_a_refusal_it_does_not_have_a_name_for():
 
     assert "Any other error means it did not happen" in prompt
     assert "Never say an order was cancelled unless the result says it was" in prompt
+
+
+def test_the_customer_is_not_told_where_the_stock_went():
+    """It once said "القطعة رجعت تانية للمخزن" - true, internal, and not what was asked."""
+    from app.modules.chat import agent
+
+    prompt = agent.build_system_prompt()
+
+    assert "Never mention stock, the warehouse, or the pieces going back on sale" in prompt

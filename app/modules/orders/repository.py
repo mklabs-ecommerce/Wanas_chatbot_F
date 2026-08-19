@@ -35,10 +35,14 @@ class ConversationOrder(Base):
     # The customer-facing number, e.g. "#1008" - what every other lookup here uses.
     order_number: Mapped[str] = mapped_column(String(32), index=True)
     channel: Mapped[str] = mapped_column(String(32), default="web")
+    # How many garments were on the order. Stored rather than read back from Shopify so
+    # the owner's list view can sort by it without one API call per row.
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
-def link(conversation_id: str, order_number: str, channel: str = "web") -> None:
+def link(conversation_id: str, order_number: str, channel: str = "web",
+         item_count: int = 0) -> None:
     """Record that this conversation placed this order. Idempotent."""
     if not (conversation_id and order_number):
         return
@@ -51,7 +55,8 @@ def link(conversation_id: str, order_number: str, channel: str = "web") -> None:
         if already is not None:
             return
         session.add(ConversationOrder(conversation_id=conversation_id,
-                                      order_number=order_number, channel=channel))
+                                      order_number=order_number, channel=channel,
+                                      item_count=max(0, int(item_count or 0))))
 
 
 def order_numbers_for(conversation_id: str) -> List[str]:
@@ -82,3 +87,15 @@ def count() -> int:
     """Used by tests and diagnostics."""
     with session_scope() as session:
         return len(session.execute(select(ConversationOrder.id)).all())
+
+
+def piece_count_for(conversation_id: str) -> int:
+    """How many garments this conversation ordered, across all its orders."""
+    if not conversation_id:
+        return 0
+    with session_scope() as session:
+        counts = session.execute(
+            select(ConversationOrder.item_count)
+            .where(ConversationOrder.conversation_id == conversation_id)
+        ).scalars().all()
+        return sum(count or 0 for count in counts)

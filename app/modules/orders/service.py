@@ -493,7 +493,8 @@ async def create_cod_order(
     # us later. Recorded after Shopify confirmed it, and never allowed to fail the order:
     # the customer's order exists either way, and a missing link costs a dashboard row.
     try:
-        repository.link(conversation_id, order.number, channel)
+        repository.link(conversation_id, order.number, channel,
+                        item_count=sum(item.quantity for item in order.items))
     except Exception as exc:  # noqa: BLE001 - a bookkeeping failure must not lose an order
         logger.warning("Could not link order %s to conversation %s: %s",
                        order.number, conversation_id or "unknown", exc)
@@ -503,6 +504,11 @@ async def create_cod_order(
 def order_numbers_for_conversation(conversation_id: str) -> List[str]:
     """Just the numbers, without asking Shopify - for counting in a list view."""
     return repository.order_numbers_for(conversation_id)
+
+
+def pieces_ordered_in_conversation(conversation_id: str) -> int:
+    """How many garments this conversation ordered. Local only, no Shopify call."""
+    return repository.piece_count_for(conversation_id)
 
 
 async def orders_for_conversation(conversation_id: str) -> List[Order]:

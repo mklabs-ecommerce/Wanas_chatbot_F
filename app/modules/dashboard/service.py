@@ -20,6 +20,11 @@ from app.modules.support import service as support_service
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONVERSATION_LIMIT = 50
+
+# How the owner may order the list. Newest first is the default because the question
+# behind opening this page is usually "what just happened".
+SORTS = ("recent", "oldest", "messages", "tickets", "pieces", "orders", "feedback")
+DEFAULT_SORT = "recent"
 # Enough to see how a conversation went without loading a whole day into a browser.
 TRANSCRIPT_LIMIT = 200
 
@@ -28,12 +33,17 @@ def _when(value) -> Optional[str]:
     return value.isoformat() if value is not None else None
 
 
-def overview(limit: int = DEFAULT_CONVERSATION_LIMIT) -> Dict[str, Any]:
+def overview(limit: int = DEFAULT_CONVERSATION_LIMIT,
+             sort: str = DEFAULT_SORT) -> Dict[str, Any]:
     """Every recent conversation, with a count of what each one produced.
 
     Deliberately cheap: counts come from the local database only. Nothing here calls
     Shopify, so the list stays fast however many conversations there are - the live
-    order details are fetched only when one conversation is opened.
+    order details are fetched only when one conversation is opened. That is also why
+    the piece count is stored when the order is placed rather than read back.
+
+    ``limit`` is applied before sorting, so it always means "the last N conversations",
+    and re-sorting them never silently changes which ones you are looking at.
     """
     rows: List[Dict[str, Any]] = []
     for summary in chat_service.conversations(limit):
@@ -49,10 +59,27 @@ def overview(limit: int = DEFAULT_CONVERSATION_LIMIT) -> Dict[str, Any]:
             "order_count": len(orders_service.order_numbers_for_conversation(conversation_id)),
             "ticket_count": len(support_service.tickets_for_conversation(conversation_id)),
             "feedback_count": len(feedback),
+            "piece_count": orders_service.pieces_ordered_in_conversation(conversation_id),
             # So a row with an unhappy customer can be spotted without opening it.
             "worst_sentiment": _worst(feedback),
         })
-    return {"count": len(rows), "conversations": rows}
+
+    sort = sort if sort in SORTS else DEFAULT_SORT
+    rows.sort(key=_sort_key(sort), reverse=(sort != "oldest"))
+    return {"count": len(rows), "sort": sort, "conversations": rows}
+
+
+def _sort_key(sort: str):
+    """How to order the list. Ties fall back to time, so the order is never arbitrary."""
+    def newest(row):
+        return row["last_at"] or ""
+
+    if sort in ("recent", "oldest"):
+        return newest
+    field = {"messages": "message_count", "tickets": "ticket_count",
+             "pieces": "piece_count", "orders": "order_count",
+             "feedback": "feedback_count"}[sort]
+    return lambda row: (row[field], newest(row))
 
 
 async def conversation(conversation_id: str) -> Dict[str, Any]:

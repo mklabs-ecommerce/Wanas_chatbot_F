@@ -84,7 +84,7 @@ def test_health_reports_whether_the_dashboard_is_on(client):
 
 def test_an_empty_install_shows_no_conversations(client):
     body = client.get("/dashboard/api/conversations?token=" + TOKEN).json()
-    assert body == {"count": 0, "conversations": []}
+    assert body == {"count": 0, "sort": "recent", "conversations": []}
 
 
 def test_a_conversation_appears_with_its_message_count(client):
@@ -168,3 +168,91 @@ def test_a_missing_conversation_or_order_is_not_linked():
     orders_repository.link("", "#1008", "web")
     orders_repository.link("c1", "", "web")
     assert orders_repository.count() == 0
+
+
+# --- ordering the list -----------------------------------------------------
+
+
+def _conversation(messages: int, pieces: int = 0, tickets: int = 0):
+    from app.modules.support import repository as support_repository
+    from app.modules.support.schemas import Ticket
+
+    cid = chat_repository.ensure_conversation(None, channel="web")
+    for n in range(messages):
+        chat_repository.add_message(cid, chat_repository.ROLE_USER, "m" + str(n))
+    if pieces:
+        orders_repository.link(cid, "#" + str(1000 + pieces) + cid[:4], "web",
+                               item_count=pieces)
+    for n in range(tickets):
+        support_repository.create(Ticket(reference="", category="complaint",
+                                         summary="x" * 20, contact="a@b.com",
+                                         conversation_id=cid))
+    return cid
+
+
+def _order_of(client, sort):
+    body = client.get("/dashboard/api/conversations?token=" + TOKEN + "&sort=" + sort).json()
+    return body["sort"], [c["conversation_id"] for c in body["conversations"]]
+
+
+def test_newest_first_is_the_default(client):
+    first = _conversation(messages=1)
+    second = _conversation(messages=1)
+
+    body = client.get("/dashboard/api/conversations?token=" + TOKEN).json()
+    assert body["sort"] == "recent"
+    assert [c["conversation_id"] for c in body["conversations"]] == [second, first]
+
+
+def test_oldest_first_reverses_it(client):
+    first = _conversation(messages=1)
+    second = _conversation(messages=1)
+
+    _, order = _order_of(client, "oldest")
+    assert order == [first, second]
+
+
+def test_sorting_by_messages(client):
+    quiet = _conversation(messages=1)
+    busy = _conversation(messages=5)
+
+    _, order = _order_of(client, "messages")
+    assert order == [busy, quiet]
+
+
+def test_sorting_by_pieces_ordered(client):
+    none = _conversation(messages=1)
+    small = _conversation(messages=1, pieces=1)
+    big = _conversation(messages=1, pieces=4)
+
+    _, order = _order_of(client, "pieces")
+    assert order[0] == big and order[1] == small and order[2] == none
+
+
+def test_sorting_by_tickets(client):
+    quiet = _conversation(messages=1)
+    complained = _conversation(messages=1, tickets=2)
+
+    _, order = _order_of(client, "tickets")
+    assert order == [complained, quiet]
+
+
+def test_an_unknown_sort_falls_back_rather_than_erroring(client):
+    """A stale bookmark should still show the page."""
+    _conversation(messages=1)
+
+    sort, order = _order_of(client, "by-vibes")
+    assert sort == "recent"
+    assert len(order) == 1
+
+
+def test_the_piece_count_comes_from_the_local_record_not_shopify(client, monkeypatch):
+    """Sorting by pieces must not cost one API call per row."""
+    async def explode(*_a, **_k):
+        raise AssertionError("sorting by pieces called Shopify")
+
+    monkeypatch.setattr(dashboard_service.orders_service, "lookup_for_staff", explode)
+    _conversation(messages=1, pieces=3)
+
+    body = client.get("/dashboard/api/conversations?token=" + TOKEN + "&sort=pieces").json()
+    assert body["conversations"][0]["piece_count"] == 3

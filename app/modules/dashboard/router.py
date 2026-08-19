@@ -56,11 +56,16 @@ def page(token: Optional[str] = Query(default=None),
 @router.get("/api/conversations")
 def conversations(limit: int = Query(default=service.DEFAULT_CONVERSATION_LIMIT,
                                      ge=1, le=200),
+                  sort: str = Query(default=service.DEFAULT_SORT),
                   token: Optional[str] = Query(default=None),
                   x_dashboard_token: Optional[str] = Header(default=None)) -> dict:
-    """Every recent conversation, with counts of what each produced."""
+    """Every recent conversation, with counts of what each produced.
+
+    ``sort`` is one of ``service.SORTS``; anything else falls back to the default rather
+    than erroring, so a stale bookmark still shows the page.
+    """
     _authorise(token, x_dashboard_token)
-    return service.overview(limit)
+    return service.overview(limit, sort)
 
 
 @router.get("/api/conversations/{conversation_id}")

@@ -21,8 +21,13 @@
   }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .01em; }
   header .sub { color: var(--muted); font-size: 13px; }
+  header select {
+    font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--line);
+    background: var(--panel); border-radius: 6px; color: var(--ink); cursor: pointer;
+  }
+  header .lbl { color: var(--muted); font-size: 12px; }
   header button {
-    margin-left: auto; font: inherit; font-size: 13px; padding: 5px 12px;
+    font: inherit; font-size: 13px; padding: 5px 12px;
     border: 1px solid var(--line); background: var(--panel); border-radius: 6px;
     cursor: pointer; color: var(--ink);
   }
@@ -79,6 +84,16 @@
 <header>
   <h1>Wanas Gallery</h1>
   <span class="sub" id="sub">loading…</span>
+  <span class="lbl" style="margin-left:auto">Sort by</span>
+  <select id="sort">
+    <option value="recent">Newest first</option>
+    <option value="oldest">Oldest first</option>
+    <option value="messages">Most messages</option>
+    <option value="pieces">Most pieces ordered</option>
+    <option value="orders">Most orders</option>
+    <option value="tickets">Most tickets</option>
+    <option value="feedback">Most feedback</option>
+  </select>
   <button id="refresh">Refresh</button>
 </header>
 <div class="wrap">
@@ -88,6 +103,7 @@
 
 <script>
 const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const SORT_KEY = "wanas.dashboard.sort";
 const $list = document.getElementById("list");
 const $detail = document.getElementById("detail");
 const $sub = document.getElementById("sub");
@@ -114,10 +130,12 @@ async function api(path) {
 
 async function loadList() {
   try {
-    const data = await api("/dashboard/api/conversations");
+    const sort = document.getElementById("sort").value;
+    const data = await api("/dashboard/api/conversations?sort=" + encodeURIComponent(sort));
     $sub.textContent = data.count + (data.count === 1 ? " conversation" : " conversations");
     $list.innerHTML = data.conversations.map(c => {
       const pills = [];
+      if (c.piece_count) pills.push(`<span class="pill order">${c.piece_count} piece${c.piece_count > 1 ? "s" : ""}</span>`);
       if (c.order_count) pills.push(`<span class="pill order">${c.order_count} order${c.order_count > 1 ? "s" : ""}</span>`);
       if (c.ticket_count) pills.push(`<span class="pill ticket">${c.ticket_count} ticket${c.ticket_count > 1 ? "s" : ""}</span>`);
       if (c.worst_sentiment === "negative") pills.push('<span class="pill neg">unhappy</span>');
@@ -215,6 +233,14 @@ function render(d) {
 document.getElementById("refresh").addEventListener("click", () => {
   loadList();
   if (current) open(current);
+});
+
+const $sort = document.getElementById("sort");
+// Remembered, because whoever opens this page tends to want the same view each time.
+$sort.value = localStorage.getItem(SORT_KEY) || "recent";
+$sort.addEventListener("change", () => {
+  localStorage.setItem(SORT_KEY, $sort.value);
+  loadList();
 });
 loadList();
 </script>

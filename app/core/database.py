@@ -9,7 +9,7 @@ import logging
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -69,6 +69,7 @@ def init_db() -> None:
     Good enough for this project's size; swap in Alembic if migrations become a need.
     """
     Base.metadata.create_all(bind=engine)
+    _add_missing_columns()
     tables = sorted(Base.metadata.tables)
     logger.info(
         "Database ready at %s (%d table(s): %s)",
@@ -76,3 +77,33 @@ def init_db() -> None:
         len(tables),
         ", ".join(tables) if tables else "none registered yet",
     )
+
+
+def _add_missing_columns() -> None:
+    """Add columns that were introduced after a table already existed.
+
+    ``create_all`` creates missing *tables* but never alters an existing one, so a new
+    column would be invisible on any database that predates it - including the one this
+    project has been developing against. This closes that gap for the simple case
+    (nullable column with a default), which is all this project has needed.
+
+    Not a migration system. If a column ever needs backfilling, a type change or a
+    rename, that is the point to bring in Alembic rather than to extend this.
+    """
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for name, table in Base.metadata.tables.items():
+        if name not in existing_tables:
+            continue  # create_all just made it, with every column
+        have = {column["name"] for column in inspector.get_columns(name)}
+        for column in table.columns:
+            if column.name in have:
+                continue
+            kind = column.type.compile(dialect=engine.dialect)
+            default = "0" if str(column.type).upper().startswith("INTEGER") else "NULL"
+            statement = ("ALTER TABLE " + name + " ADD COLUMN " + column.name + " "
+                         + kind + " DEFAULT " + default)
+            logger.info("Adding missing column %s.%s", name, column.name)
+            with engine.begin() as connection:
+                connection.execute(text(statement))
