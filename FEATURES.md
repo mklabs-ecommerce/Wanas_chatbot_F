@@ -1,6 +1,6 @@
 # Wanas Gallery Chatbot — What It Does, What's Next
 
-**Status as of 2026-08-19** — 433 automated tests passing, running locally at
+**Status as of 2026-08-19** — 482 automated tests passing, running locally at
 `http://127.0.0.1:8000`, connected to the live Shopify store `p0hd05-m5`.
 
 This document is written for deciding what to build next. It covers what the bot can
@@ -126,7 +126,45 @@ Guards that make this safe:
 - Egyptian governorate is matched from Arabic or English across all 29, and phone numbers
   are converted to international format, both of which Shopify silently requires.
 
-### 1.7 Cancelling an order, and exchanges
+### 1.7 Paying online by card
+
+The customer can pay by card instead of cash. The bot asks which they want, then creates
+a **Shopify checkout link** for the pieces they chose and sends it. They pay on Shopify's
+own page.
+
+**The bot never touches a payment.** There is no code path that could accept a card
+number, which is why it can flatly refuse one — and it does, unprompted:
+
+> يا ريت ما تبعتش أي بيانات فيزا أو تفاصيل بنكية هنا في الشات، الدفع بيتم فقط من خلال صفحة الدفع دي.
+
+This works **now, with the storefront still password-protected.** A checkout link is not
+the shop: verified live on 2026-08-19, the link opens straight onto the checkout page
+rather than the password wall. Publishing the store changes nothing here.
+
+What the bot will not do:
+
+- It will not say the order is placed because it sent a link. Nothing is ordered,
+  reserved or charged until they pay.
+- It will not give an order number, because there isn't one yet.
+- It will not confirm a payment on the customer's word. Asked "I already paid", it says
+  it will confirm as soon as the store does — and it means it.
+- It will not read the link's amount out as the total. That figure is the goods only;
+  delivery is added at checkout.
+
+**One basket, one link.** Asked again for the same pieces, it re-sends the link it
+already gave rather than making a second one — two live links is how someone pays twice.
+There is no time limit on that, deliberately. What does end it is the price: a link holds
+the price it was made at, so once the catalog disagrees, a fresh one is issued.
+
+**When they pay**, the store sees it and the bot tells them on their next message, with
+the order number. From that moment it is an ordinary order — it shows in the dashboard,
+it gets the shipped notice, and it is owed feedback like any other.
+
+The address is **not** collected in chat for this route. The Shopify checkout asks for it
+and validates it, and asking twice loses people in between. Anything they already
+volunteered is passed through so the checkout arrives part-filled.
+
+### 1.8 Cancelling an order, and exchanges
 
 Straight from `policy.md`.
 
@@ -151,7 +189,7 @@ process, so the bot states the terms and files a ticket for you:
 
 It is forbidden to waive a fee, soften the terms, or promise an exchange will be accepted.
 
-### 1.8 Telling a customer their order shipped
+### 1.9 Telling a customer their order shipped
 
 When Shopify marks an order fulfilled, the customer is told once — with the tracking
 number if there is one.
@@ -167,7 +205,7 @@ number if there is one.
 conversation, so the bot can only tell them when they next write in. The detection half
 is done and tested; when WhatsApp is connected, the same logic sends it directly.
 
-### 1.9 Support tickets
+### 1.10 Support tickets
 
 When the bot cannot resolve something, it files a ticket and emails the store owner.
 
@@ -193,7 +231,7 @@ The email carries far more than the ticket itself:
 The same issue in the same conversation within 30 minutes returns the existing ticket
 rather than filing again.
 
-### 1.10 Recording what customers think
+### 1.11 Recording what customers think
 
 Separate from support tickets on purpose: a ticket is a problem awaiting an action,
 feedback is an opinion awaiting nothing. Anything the customer wants fixed, replaced,
@@ -219,7 +257,7 @@ refunded or chased stays a ticket.
   code would invite the customer to expect a reply that is not coming.
 - One conversation is one opinion, so saying thank you twice is recorded once.
 
-### 1.11 Honesty guarantees
+### 1.12 Honesty guarantees
 
 These are the rules that stop the bot inventing things, and each one exists because of a
 real bug that happened:
@@ -249,6 +287,8 @@ All in `.env`:
 | `COD_SHIPPING_FEE` | unset | A flat delivery charge, if you want one |
 | `COD_ORDER_TAGS` | `cash-on-delivery`, `chatbot` | How bot orders are tagged in Shopify |
 | `COD_DUPLICATE_WINDOW_SECONDS` | 900 (15 min) | Duplicate-order protection window |
+| `ONLINE_PAYMENT_ENABLED` | `true` | Offer card payment at all. Off hides the tool completely |
+| `ONLINE_ORDER_TAGS` | `online-payment`, `chatbot` | How card-paid orders are tagged in Shopify |
 | `TICKET_DUPLICATE_WINDOW_SECONDS` | 1800 (30 min) | Duplicate-ticket window |
 | `FEEDBACK_DUPLICATE_WINDOW_SECONDS` | 1800 (30 min) | Duplicate-feedback window |
 | `ORDERS_REQUIRE_CONTACT_VERIFICATION` | `true` | The order-privacy check in §1.4 |
@@ -266,8 +306,8 @@ All in `.env`:
 
 | # | Feature | Status |
 |---|---|---|
-| 7 | **Online card payment** — create a Shopify draft order and send the customer a real checkout link | **Deferred** until the storefront password is lifted. A checkout link is useless while the store is shut. |
-| 10 | **Feedback module** — record what customers think | **Built** (2026-08-19). See §1.8. |
+| 7 | **Online card payment** — a Shopify draft order and a real checkout link | **Built** (2026-08-19). See §1.7. The password wall turned out not to block a checkout link, so this did not have to wait for the store to open. |
+| 10 | **Feedback module** — record what customers think | **Built** (2026-08-19). See §1.11. |
 | 11 | **Verify channel attribution** in the Shopify admin | Orders #1004 and #1006 are sitting there to check. |
 
 ### 3.2 Things the bot tells customers it cannot do
@@ -275,7 +315,6 @@ All in `.env`:
 It says these plainly rather than pretending:
 
 - It cannot **change what is in** an order once placed — only cancel it, before it ships.
-- It cannot take **card or online payment** yet.
 
 ### 3.3 Excluded by decision
 
@@ -330,7 +369,7 @@ every one of those becomes an email for a human. Within a safe window — before
 same day — the bot could cancel and restock in Shopify directly. This is probably the
 most-requested thing it currently cannot do.
 
-**e) ~~Build the feedback module (step 10).~~** **Done 2026-08-19** — see §1.8.
+**e) ~~Build the feedback module (step 10).~~** **Done 2026-08-19** — see §1.11.
 Worth pairing with (f) below: feedback is being collected now, but there is still no way
 to read it back other than the emails for unhappy customers.
 

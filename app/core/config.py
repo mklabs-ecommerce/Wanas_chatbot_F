@@ -109,6 +109,22 @@ class Settings(BaseSettings):
     # Rates change far less often than stock.
     shipping_cache_seconds: float = 3600.0
 
+    # --- Online payment ---------------------------------------------------
+    # The other way to pay: a draft order with a Shopify checkout link the customer
+    # opens themselves. The bot never sees a card number - the whole point of handing
+    # over a link instead of taking details in chat.
+    #
+    # Verified 2026-08-19: a draft's invoiceUrl reaches the checkout even while the
+    # storefront is password-protected, so this works before the shop is published.
+    online_payment_enabled: bool = True
+    # No "cash-on-delivery" here - that tag means cash to collect, and these are paid
+    # online. The channel is appended at creation time, as it is for COD.
+    online_order_tags: List[str] = ["online-payment", "chatbot"]
+    # A repeat call for the same basket in the same conversation reuses the link it
+    # already gave rather than issuing a second one - two live links for one basket
+    # invite paying twice. There is no time window on that, deliberately: an old link
+    # still takes money. What ends the reuse is the price changing.
+
     # --- Database --------------------------------------------------------
     # Unset locally -> SQLite file under ./data. Set to a Postgres URL in production.
     database_url: Optional[str] = None
@@ -189,6 +205,15 @@ class Settings(BaseSettings):
     def email_configured(self) -> bool:
         """Email notifications need a server, a sender and a recipient to be useful."""
         return bool(self.smtp_host and self.smtp_from and self.store_owner_email)
+
+    @property
+    def online_payment_configured(self) -> bool:
+        """Whether the bot may offer a payment link at all.
+
+        Needs Shopify, because the link is a Shopify checkout. Off means the bot offers
+        cash on delivery only, and the tool is not even declared to the model.
+        """
+        return self.online_payment_enabled and self.shopify_configured
 
     @property
     def delivery_period_known(self) -> bool:

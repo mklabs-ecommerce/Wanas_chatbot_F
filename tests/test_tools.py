@@ -28,8 +28,8 @@ def test_declarations_are_plain_json_schema():
     assert [d["name"] for d in declared] == [
         "search_products", "browse_products", "get_order_status",
         "get_orders_by_customer", "get_delivery_cost", "identify_product_from_image",
-        "create_cod_order", "cancel_order", "create_support_ticket",
-        "record_feedback",
+        "create_cod_order", "create_payment_link", "cancel_order",
+        "create_support_ticket", "record_feedback",
     ]
     schema = declared[0]["parameters"]
     assert schema["type"] == "object"
@@ -38,11 +38,12 @@ def test_declarations_are_plain_json_schema():
 
 
 def test_only_the_built_tools_exist_at_this_build_step():
-    """Step 7 (draft orders, online payment) is still deferred - nothing for it yet."""
+    """Every step of Section 8 that is done, and nothing that is not."""
     assert tools.names() == ["search_products", "browse_products", "get_order_status",
                              "get_orders_by_customer", "get_delivery_cost",
                              "identify_product_from_image", "create_cod_order",
-                             "cancel_order", "create_support_ticket", "record_feedback"]
+                             "create_payment_link", "cancel_order",
+                             "create_support_ticket", "record_feedback"]
 
 
 # --- dispatch -----------------------------------------------------------

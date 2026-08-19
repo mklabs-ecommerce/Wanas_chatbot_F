@@ -239,6 +239,62 @@ when it is known. The prompt allows a delivery time **only** from that field, st
 inventing a date, and forbids turning the range into a calendar day. The original
 "never estimate a delivery date" rule survives — this is a narrow, sourced exception to it.
 
+### Paying online (`orders.service.create_draft_order`)
+
+The other half of the payment story, and the one thing that keeps it safe: **the bot
+never touches a payment.** It creates a Shopify *draft order* — a priced basket with a
+checkout link — and hands the link over. Nothing exists in the shop until the customer
+pays through it. There is no code path that could accept a card number, which is why the
+prompt can flatly refuse one.
+
+**A draft's `invoiceUrl` reaches the checkout even while the storefront is
+password-protected.** Verified live 2026-08-19: it lands on `/checkouts/do/…` with HTTP
+200, not the password page. That single fact is what lets this ship before the shop is
+published, and `_STOREFRONT_CLOSED` carries an explicit carve-out for it — without that,
+the "never send them to the website" rule would suppress the link.
+
+`Draft` is a separate type from `Order` on purpose: code holding a `Draft` cannot
+accidentally tell a customer their order is placed. Its `to_tool_dict()` calls the amount
+**`items_total`, not `total`** — a draft is priced before a delivery address exists, so
+it is the goods only, and the earlier name invited the bot to read it out as the amount
+they would pay. The Shopify id and the draft's own name (`#D3`) never reach the model;
+that name is not an order number and staff cannot look one up by it.
+
+Guards, mirroring the COD path where the risk is the same:
+
+- Variants are re-resolved from the live catalog, so a link is never issued for a
+  sold-out size. Only `variantId` + `quantity` are sent — **never a price**.
+- `requiresShipping: true` per line, for the same reason `orderCreate` needs it.
+- **One basket, one link.** A repeat call reuses the link it already gave. Unlike the COD
+  duplicate check this has **no time window**, deliberately: an old link still takes
+  money, so expiring it would leave two live links for one basket and a customer who pays
+  both has paid twice. What ends the reuse is the price — a draft holds the price it was
+  created at, so once the catalog disagrees (`_same_money`) a fresh link is made.
+- Tagged `online-payment` + `chatbot` + the channel, and **never `cash-on-delivery`** —
+  that tag means cash to collect. `_staff_note` says "Paid online" for the same reason:
+  a note claiming COD on a paid order gets money asked for at the door.
+- No address is required. The checkout collects and validates it, and asking twice loses
+  customers between the two. Anything the customer already volunteered is passed through,
+  but a half-address is sent as none — a partly filled checkout reads as complete and
+  gets clicked past.
+
+**Finding out that they paid.** The bot cannot see a payment happen, so it must never
+claim one. `payment_news(conversation_id)` runs once per customer turn, like the feedback
+and shipping checks and with the same never-raises contract. It re-reads each outstanding
+draft; a draft that has become an order is settled with that order's number and **linked
+into `conversation_orders` as an ordinary order of this conversation**, which is what
+makes the shipping notice, the feedback ask and the dashboard pick it up with no extra
+work. A draft deleted in the admin is settled with no order, so it stops being polled.
+`agent.handle_message()` calls `feedback_service.expect_review()` for each newly-paid
+order — in the agent, not in `orders`, because `feedback → orders` already exists and the
+reverse edge would be a cycle. The "told" marker is set after the reply is persisted,
+the same trade as the shipping notice.
+
+The tool is `create_payment_link`, and it is **not declared at all** when
+`online_payment_configured` is false, so the model cannot offer a way to pay the store
+does not have. `_available()` in `tools.py` is the general mechanism; `dispatch()`
+re-checks it, so a call from a stale prompt is refused rather than run.
+
 ### Cancelling an order (`orders.service.cancel_order`)
 
 The second irreversible thing the bot does, and the rule is `policy.md` verbatim:
@@ -346,10 +402,15 @@ before it reaches them is asking about something they have not seen. Instead:
 - If it is, `build_system_prompt()` appends a note naming **the actual pieces**, because
   "how was your order?" gets nothing and "how was the Ringer in Brown?" gets an answer.
 
-`Order.reached_the_customer` is deliberately strict, and COD-only: the customer pays the
-courier at the door, so `PAID` cannot precede arrival. `FULFILLED` is not enough — it only
-means the parcel left the shop. Prepaid orders return False rather than a guess, since
-they are `PAID` at checkout; revisit when step 7 lands.
+`Order.reached_the_customer` is deliberately strict. For COD it is exact: the customer
+pays the courier at the door, so `PAID` cannot precede arrival. `FULFILLED` is not
+enough — it only means the parcel left the shop. For an order **paid online** `PAID`
+happens at checkout and says nothing about delivery, so the only fact left is the
+carrier's own report (`deliveredAt` / `displayStatus: DELIVERED`), which Shopify carries
+but which stays empty unless the courier integrates with the shop — it is empty for this
+store today. A prepaid order therefore never counts as arrived, and nobody is asked how
+it was. That is the intended failure: silence rather than asking someone about a parcel
+they may not be holding.
 
 `review_due()` never raises: it runs on the way into an ordinary customer turn, so Shopify
 being down costs the feedback prompt, not the conversation. Recording feedback or calling
@@ -387,9 +448,8 @@ created the order, so it is entitled to it, and there is no customer contact to 
 
 Build in the order of Section 8, one numbered step at a time, and **confirm with the user
 before starting the next step**. Don't collapse modules together, and keep the boundaries
-intact from the start. Progress is tracked in the README checklist (steps 1–6 and 8–10 done). Step 7,
-`create_draft_order()`, is deferred until the storefront password is lifted; step 11
-(verifying channel attribution in the Shopify admin) is still unchecked.
+intact from the start. Progress is tracked in the README checklist (steps 1–10 done).
+Step 11 (verifying channel attribution in the Shopify admin) is still unchecked.
 
 Both Section 9 business questions are now answered by the user: image matching asserts
 when confident and asks otherwise; COD orders use `PENDING` with tags `cash-on-delivery`,

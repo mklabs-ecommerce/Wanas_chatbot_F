@@ -105,6 +105,7 @@ def health() -> dict:
             "api_version": settings.shopify_api_version,
         },
         "email_configured": settings.email_configured,
+        "online_payment": settings.online_payment_configured,
         "dashboard_enabled": settings.dashboard_enabled,
     }
 

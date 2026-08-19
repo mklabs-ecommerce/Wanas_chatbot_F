@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 from dataclasses import dataclass, field
 
+from app.core.config import settings
 from app.integrations.llm_types import ImagePart
 from app.modules.catalog import service as catalog_service
 from app.modules.catalog.service import CatalogUnavailable
@@ -562,6 +563,134 @@ async def _create_cod_order(
     return payload
 
 
+CREATE_PAYMENT_LINK = {
+    "name": "create_payment_link",
+    "description": (
+        "For a customer who wants to pay online by card instead of cash on delivery. "
+        "Creates a secure Shopify checkout link for the pieces they chose and returns "
+        "it. This does NOT place an order: nothing is ordered, reserved or charged "
+        "until the customer opens the link and pays there. Only the items are needed - "
+        "the checkout collects the name, phone and address itself, so do not ask for "
+        "them first, though you may pass anything the customer has already told you. "
+        "Never ask for a card number, CVV, PIN or OTP; the link is the only way payment "
+        "is ever taken. Use create_cod_order instead when they want to pay cash on "
+        "delivery."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "description": "The pieces the customer wants to pay for.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "product": {
+                            "type": "string",
+                            "description": "The product's exact title or id from a tool result.",
+                        },
+                        "size": {"type": "string", "description": "Size, e.g. 'L'."},
+                        "color": {"type": "string", "description": "Colour, e.g. 'Brown'."},
+                        "quantity": {"type": "integer", "description": "How many. Defaults to 1."},
+                    },
+                    "required": ["product", "size", "color"],
+                },
+            },
+            "customer_name": {
+                "type": "string",
+                "description": "Their name, only if they have already given it. Optional.",
+            },
+            "phone": {
+                "type": "string",
+                "description": "Their phone, only if they have already given it. Optional.",
+            },
+            "email": {
+                "type": "string",
+                "description": "Their email, only if they have already given it. Optional.",
+            },
+            "address1": {
+                "type": "string",
+                "description": (
+                    "Street address, only if they have already given it. Optional - "
+                    "the checkout asks for it. Never ask for it just to fill this in."
+                ),
+            },
+            "address2": {"type": "string", "description": "Flat, floor or district. Optional."},
+            "city": {"type": "string", "description": "Town or city. Optional."},
+            "governorate": {"type": "string", "description": "Governorate. Optional."},
+            "note": {
+                "type": "string",
+                "description": "Any instruction they asked to pass on to the store.",
+            },
+            "customer_confirmed": {
+                "type": "boolean",
+                "description": (
+                    "True only if you read the pieces back - items, sizes, colours - and "
+                    "the customer agreed. Never set this to true in the same message "
+                    "that asks for confirmation."
+                ),
+            },
+        },
+        "required": ["items", "customer_confirmed"],
+    },
+}
+
+
+async def _create_payment_link(
+    arguments: Dict[str, Any],
+    context: "ToolContext",
+) -> Dict[str, Any]:
+    """Dispatch to ``orders.service.create_draft_order``."""
+    if not arguments.get("customer_confirmed"):
+        return {"error": "not_confirmed"}
+
+    raw_items = arguments.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        return {"error": "A payment link needs at least one item."}
+
+    items = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            return {"error": "Each item needs a product, size and colour."}
+        items.append(RequestedItem(
+            product=str(raw.get("product") or "").strip(),
+            size=str(raw.get("size") or "").strip() or None,
+            color=str(raw.get("color") or "").strip() or None,
+            quantity=raw.get("quantity") or 1,
+        ))
+
+    def text(key):
+        return str(arguments.get(key) or "").strip() or None
+
+    try:
+        draft = await orders_service.create_draft_order(
+            items=items,
+            customer_name=text("customer_name"),
+            phone=text("phone"),
+            email=text("email"),
+            address1=text("address1"),
+            address2=text("address2"),
+            city=text("city"),
+            governorate=text("governorate"),
+            note=text("note"),
+            # From the request, never from the model - as with a COD order.
+            channel=context.channel,
+            conversation_id=context.conversation_id,
+        )
+    except OrderRejected as exc:
+        logger.warning("Payment link refused: %s", exc)
+        payload = {"created": False, "error": "rejected", "reason": str(exc)}
+        payload.update(exc.detail)
+        return payload
+    except OrdersUnavailable as exc:
+        logger.error("create_payment_link failed: %s", exc)
+        return {"created": False, "error": "orders_unavailable"}
+
+    # Deliberately no expect_review here, and no delivery_period: nothing has been
+    # ordered yet. Both follow the payment, from payment_news().
+    return {"created": True, "payment_link": draft.to_tool_dict()}
+
+
 CANCEL_ORDER = {
     "name": "cancel_order",
     "description": (
@@ -821,6 +950,14 @@ _REGISTRY: Dict[str, Dict[str, Any]] = {
         "handler": _create_cod_order,
         "wants_context": True,
     },
+    CREATE_PAYMENT_LINK["name"]: {
+        "declaration": CREATE_PAYMENT_LINK,
+        "handler": _create_payment_link,
+        "wants_context": True,
+        # Not offered at all when the store takes cash only, so the model cannot promise
+        # a way to pay that does not exist.
+        "available": lambda: settings.online_payment_configured,
+    },
     CANCEL_ORDER["name"]: {
         "declaration": CANCEL_ORDER,
         "handler": _cancel_order,
@@ -841,13 +978,25 @@ _REGISTRY: Dict[str, Dict[str, Any]] = {
 Handler = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
 
 
+def _available(entry: Dict[str, Any]) -> bool:
+    """Whether this tool is offered at all right now.
+
+    A tool can depend on configuration - online payment is off for a cash-only store -
+    and an unavailable one is never declared, so the model cannot offer the customer
+    something the shop does not do. Checked on every call rather than at import, so a
+    setting change takes effect without a restart.
+    """
+    check = entry.get("available")
+    return True if check is None else bool(check())
+
+
 def declarations() -> List[Dict[str, Any]]:
-    """Every tool declaration, for handing to the model."""
-    return [entry["declaration"] for entry in _REGISTRY.values()]
+    """Every tool declaration currently on offer, for handing to the model."""
+    return [entry["declaration"] for entry in _REGISTRY.values() if _available(entry)]
 
 
 def names() -> List[str]:
-    return list(_REGISTRY)
+    return [name for name, entry in _REGISTRY.items() if _available(entry)]
 
 
 async def dispatch(
@@ -862,6 +1011,11 @@ async def dispatch(
     business with it.
     """
     entry = _REGISTRY.get(name)
+    if entry is not None and not _available(entry):
+        # Switched off between the declaration and the call, or hallucinated from an
+        # older prompt. Either way it must not run.
+        logger.warning("Model called %r, which is not currently available", name)
+        return {"error": "The " + name + " tool is not available."}
     if entry is None:
         # A hallucinated tool name is reported back rather than raised, so the model can
         # correct itself instead of the whole turn failing.

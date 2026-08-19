@@ -92,6 +92,9 @@ class Order:
     ships_to_country: Optional[str] = None
     cash_on_delivery: bool = False
     estimated_delivery: Optional[str] = None
+    # The carrier's own report that the parcel was handed over, when there is one. Not a
+    # status this app or the store sets - only a courier that reports back fills it in.
+    carrier_delivered: bool = False
     items: List[LineItem] = field(default_factory=list)
     tracking: Optional[Tracking] = None
 
@@ -111,14 +114,18 @@ class Order:
         door, so ``PAID`` cannot happen before the parcel does. ``FULFILLED`` is not
         good enough - it only means the order left the shop.
 
-        Prepaid orders are paid at checkout, so payment says nothing about delivery and
-        there is no reliable signal here yet. They return False rather than a guess.
-        Revisit when step 7 (draft orders) lands.
+        An order paid online is ``PAID`` from the moment of checkout, so payment says
+        nothing at all about delivery. The only fact left is the carrier's own report,
+        which Shopify carries as ``deliveredAt``/``DELIVERED`` - and which stays empty
+        unless the courier integrates with the shop. So a prepaid order sent by a courier
+        that reports nothing simply never counts as arrived, and the bot never asks how
+        it was. That is the intended failure: silence rather than asking someone about a
+        parcel they may not have.
         """
         if self.is_cancelled:
             return False
         if not self.cash_on_delivery:
-            return False
+            return self.carrier_delivered
         return self.financial_status.upper() == "PAID"
 
     @property
@@ -160,3 +167,56 @@ class Order:
         if self.tracking and not self.tracking.is_empty:
             payload["tracking"] = self.tracking.to_tool_dict()
         return payload
+
+
+@dataclass
+class Draft:
+    """A basket with a payment link. Not an order, and deliberately a separate type.
+
+    A draft order is what online payment goes through: the pieces are priced and held in
+    a checkout the customer opens themselves, and nothing exists in the shop until they
+    pay. Keeping it distinct from ``Order`` is the point - code that has a ``Draft``
+    cannot accidentally tell a customer their order is placed.
+    """
+
+    id: str
+    name: str
+    checkout_url: str
+    status: str = "OPEN"
+    total: str = "0"
+    subtotal: str = "0"
+    delivery: str = "0"
+    currency: str = "EGP"
+    # Set by Shopify once the draft is paid, and null until then. The only honest
+    # evidence that money arrived.
+    order_number: Optional[str] = None
+    order_id: Optional[str] = None
+    items: List[LineItem] = field(default_factory=list)
+    created_at: Optional[str] = None
+
+    @property
+    def paid(self) -> bool:
+        """Whether this draft has become a real, paid order."""
+        return bool(self.order_number)
+
+    @property
+    def piece_count(self) -> int:
+        return sum(item.quantity for item in self.items)
+
+    def to_tool_dict(self) -> Dict[str, Any]:
+        """What the model may see. The Shopify id and the tags never leave this module.
+
+        ``checkout_url`` is the one field that exists to be repeated to the customer;
+        everything else is here so the bot can read the basket back to them.
+        """
+        return {
+            "checkout_url": self.checkout_url,
+            # Named for what it is. A draft is priced before the customer has chosen a
+            # delivery address, so it carries the goods only - calling this "total"
+            # invited the bot to read it out as the amount they would pay.
+            "items_total": self.total,
+            "currency": self.currency,
+            "delivery_charged_at_checkout": True,
+            "paid": self.paid,
+            "items": [item.to_tool_dict() for item in self.items],
+        }

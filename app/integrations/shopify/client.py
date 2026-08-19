@@ -56,6 +56,15 @@ class ShopifyRejected(ShopifyError):
 
 # One document reused for both listing and searching: passing `query` filters, omitting
 # it returns everything. `truncateAt` keeps descriptions from bloating the payload.
+def _errors_to_text(errors: List[Dict[str, Any]]) -> str:
+    """Flatten Shopify userErrors into one readable line."""
+    return "; ".join(
+        (".".join(item.get("field") or []) + ": " if item.get("field") else "")
+        + str(item.get("message", item))
+        for item in errors
+    )
+
+
 PRODUCTS_QUERY = """
 query Products($first: Int!, $after: String, $query: String) {
   products(first: $first, after: $after, query: $query) {
@@ -95,10 +104,7 @@ query Products($first: Int!, $after: String, $query: String) {
 # `phone:` filter returns near-misses too), so callers must confirm identity themselves -
 # see `modules/orders/service.py`. Everything a customer could reasonably ask about an
 # order is fetched in one call; deciding what may be shown is the module's job.
-ORDERS_QUERY = """
-query Orders($first: Int!, $query: String) {
-  orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
-    nodes {
+ORDER_FIELDS = """
       id
       name
       createdAt
@@ -121,11 +127,18 @@ query Orders($first: Int!, $query: String) {
       }
       fulfillments(first: 5) {
         status
+        displayStatus
         createdAt
+        deliveredAt
         estimatedDeliveryAt
         trackingInfo { number url company }
       }
-    }
+"""
+
+ORDERS_QUERY = """
+query Orders($first: Int!, $query: String) {
+  orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+    nodes {""" + ORDER_FIELDS + """}
   }
 }
 """
@@ -134,6 +147,16 @@ query Orders($first: Int!, $query: String) {
 # the customer to go through. What the fields should contain is `modules/orders`' business;
 # this document only knows how to carry them. The returned selection matches ORDERS_QUERY
 # so one mapper can read either.
+# Reading one order by its Shopify id. Deliberately separate from ORDERS_QUERY: that
+# one goes through Shopify's order *search*, whose index lags behind reality by a second
+# or two, so an order that has just been created is not findable by name yet. Anything
+# holding an id should use this instead.
+ORDER_BY_ID_QUERY = """
+query OrderById($id: ID!) {
+  order(id: $id) {""" + ORDER_FIELDS + """}
+}
+"""
+
 ORDER_CREATE_MUTATION = """
 mutation CreateOrder($order: OrderCreateOrderInput!, $options: OrderCreateOptionsInput) {
   orderCreate(order: $order, options: $options) {
@@ -158,7 +181,9 @@ mutation CreateOrder($order: OrderCreateOrderInput!, $options: OrderCreateOption
       lineItems(first: 25) { nodes { title quantity variantTitle sku } }
       fulfillments(first: 5) {
         status
+        displayStatus
         createdAt
+        deliveredAt
         estimatedDeliveryAt
         trackingInfo { number url company }
       }
@@ -180,6 +205,53 @@ mutation CancelOrder($orderId: ID!, $reason: OrderCancelReason!, $refund: Boolea
     job { id done }
     orderCancelUserErrors { field message code }
   }
+}
+"""
+
+# Online payment. A draft order is not an order: it is a priced basket with a checkout
+# link, and nothing exists in the shop until the customer pays through it. `invoiceUrl`
+# is that link - verified 2026-08-19 to reach the checkout directly even while the
+# storefront is password-protected, which is why this path works before the shop opens.
+#
+# `order` is null until the draft is paid, and carries the real order once it is. That is
+# the only honest signal that money arrived; the orders module polls it.
+DRAFT_ORDER_FIELDS = """
+      id
+      name
+      invoiceUrl
+      status
+      createdAt
+      tags
+      currencyCode
+      totalPriceSet { shopMoney { amount currencyCode } }
+      subtotalPriceSet { shopMoney { amount currencyCode } }
+      totalShippingPriceSet { shopMoney { amount currencyCode } }
+      order { id name }
+      lineItems(first: 25) {
+        nodes { title quantity variantTitle sku variant { id } }
+      }
+"""
+
+DRAFT_ORDER_CREATE_MUTATION = """
+mutation CreateDraftOrder($input: DraftOrderInput!) {
+  draftOrderCreate(input: $input) {
+    draftOrder {""" + DRAFT_ORDER_FIELDS + """}
+    userErrors { field message }
+  }
+}
+"""
+
+DRAFT_ORDERS_QUERY = """
+query DraftOrders($first: Int!, $query: String) {
+  draftOrders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+    nodes {""" + DRAFT_ORDER_FIELDS + """}
+  }
+}
+"""
+
+DRAFT_ORDER_QUERY = """
+query DraftOrder($id: ID!) {
+  draftOrder(id: $id) {""" + DRAFT_ORDER_FIELDS + """}
 }
 """
 
@@ -356,6 +428,15 @@ class ShopifyClient:
         data = await self.graphql(ORDERS_QUERY, variables)
         return (data.get("orders") or {}).get("nodes") or []
 
+    async def fetch_order(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """One order by its Shopify id, or None if it is gone.
+
+        Unlike ``fetch_orders`` this does not go through the order search, so it sees an
+        order the moment it exists.
+        """
+        data = await self.graphql(ORDER_BY_ID_QUERY, {"id": order_id})
+        return data.get("order")
+
     async def create_order(
         self,
         order: Dict[str, Any],
@@ -375,11 +456,7 @@ class ShopifyClient:
         payload = data.get("orderCreate") or {}
         errors = payload.get("userErrors") or []
         if errors:
-            message = "; ".join(
-                (".".join(item.get("field") or []) + ": " if item.get("field") else "")
-                + str(item.get("message", item))
-                for item in errors
-            )
+            message = _errors_to_text(errors)
             raise ShopifyRejected("Shopify refused the order: " + message[:400], errors)
 
         created = payload.get("order")
@@ -416,14 +493,50 @@ class ShopifyClient:
         payload = data.get("orderCancel") or {}
         errors = payload.get("orderCancelUserErrors") or []
         if errors:
-            message = "; ".join(
-                (".".join(item.get("field") or []) + ": " if item.get("field") else "")
-                + str(item.get("message", item))
-                for item in errors
-            )
+            message = _errors_to_text(errors)
             raise ShopifyRejected("Shopify refused to cancel the order: " + message[:400],
                                   errors)
         return payload.get("job") or {}
+
+    async def create_draft_order(self, draft: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a draft order and return the raw draft node.
+
+        Not retried, for the same reason ``create_order`` is not. A draft can be deleted
+        where an order cannot, but a repeat still hands one customer two payment links
+        for the same basket, and they might pay both.
+        """
+        data = await self.graphql(
+            DRAFT_ORDER_CREATE_MUTATION,
+            {"input": draft},
+            max_attempts=1,
+        )
+        payload = data.get("draftOrderCreate") or {}
+        errors = payload.get("userErrors") or []
+        if errors:
+            raise ShopifyRejected("Shopify refused the draft order: "
+                                  + _errors_to_text(errors)[:400], errors)
+
+        created = payload.get("draftOrder")
+        if not created:
+            raise ShopifyError("Shopify returned no draft order and no error")
+        return created
+
+    async def fetch_draft_orders(
+        self,
+        query: Optional[str] = None,
+        first: int = 25,
+    ) -> List[Dict[str, Any]]:
+        """Return raw draft-order nodes, newest first."""
+        variables: Dict[str, Any] = {"first": first}
+        if query:
+            variables["query"] = query
+        data = await self.graphql(DRAFT_ORDERS_QUERY, variables)
+        return (data.get("draftOrders") or {}).get("nodes") or []
+
+    async def fetch_draft_order(self, draft_id: str) -> Optional[Dict[str, Any]]:
+        """One draft order by id, or None if it has been deleted."""
+        data = await self.graphql(DRAFT_ORDER_QUERY, {"id": draft_id})
+        return data.get("draftOrder")
 
     async def fetch_delivery_rates(self) -> List[Dict[str, Any]]:
         """Return the raw delivery profiles, or raise ShopifyAuthError without the scope."""

@@ -53,6 +53,7 @@
   }
   .pill.order { border-color: #cbd9c9; color: var(--ok); }
   .pill.ticket { border-color: #e3cdc1; color: var(--warn); }
+  .pill.unpaid { border-color: #e3cdc1; color: var(--warn); }
   .pill.neg { border-color: #e8c4c4; color: var(--bad); }
   .pill.pos { border-color: #cbd9c9; color: var(--ok); }
   .detail { padding: 22px 26px; overflow-y: auto; }
@@ -138,6 +139,8 @@ async function loadList() {
       if (c.piece_count) pills.push(`<span class="pill order">${c.piece_count} piece${c.piece_count > 1 ? "s" : ""}</span>`);
       if (c.order_count) pills.push(`<span class="pill order">${c.order_count} order${c.order_count > 1 ? "s" : ""}</span>`);
       if (c.ticket_count) pills.push(`<span class="pill ticket">${c.ticket_count} ticket${c.ticket_count > 1 ? "s" : ""}</span>`);
+      // A checkout link that never got paid: a sale that almost happened.
+      if (c.unpaid_link_count) pills.push(`<span class="pill unpaid">${c.unpaid_link_count} unpaid link${c.unpaid_link_count > 1 ? "s" : ""}</span>`);
       if (c.worst_sentiment === "negative") pills.push('<span class="pill neg">unhappy</span>');
       else if (c.worst_sentiment === "positive") pills.push('<span class="pill pos">happy</span>');
       else if (c.worst_sentiment) pills.push('<span class="pill">feedback</span>');

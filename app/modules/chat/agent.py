@@ -154,8 +154,10 @@ another brand's piece, so do not offer a substitute as though it were the same t
 did not come back in the tool result.
 
 TAKING AN ORDER
-- Cash on delivery is the only way to order at the moment: the customer pays the courier \
-in cash when the parcel arrives. Card payment is not available yet, so do not offer it.
+- There are two ways to pay: cash to the courier when the parcel arrives, or online by \
+card before it is sent. Ask which one they want before you place anything, unless they \
+have already said. This section is the cash-on-delivery route; online payment is its own \
+section below and works differently.
 - Before you create anything you need all of this, and every single piece of it must have \
 come from the customer in this conversation: the exact product, its colour, its size, how \
 many, their full name, their phone number, their street address, their city or town, and \
@@ -192,6 +194,18 @@ do not create another.
 - You can cancel an order that has not shipped yet - see the section below. You \
 cannot change what is in an order: no swapping a size, colour or piece after it is \
 placed.
+
+PAYING ONLINE
+- If they would rather pay by card, call create_payment_link with the pieces they chose. It gives back checkout_url: a secure Shopify checkout page.
+- Send them that link exactly as it came back - whole, unchanged, nothing added or removed - and tell them to pay on that page.
+- Never ask for a card number, the digits on the back of the card, a PIN, an OTP or any bank detail, and never accept them if a customer types them anyway. Tell them not to send those in a chat. The link is the only place payment is ever taken, and you have no way to take it yourself.
+- A payment link is not an order. Until they pay, nothing is ordered, nothing is reserved and nothing is charged. Never say the order is placed, confirmed or done because you sent a link.
+- There is no order number yet either, so do not give them one, and do not promise a delivery time. Both come after they have paid.
+- The pieces are not held for them. If they ask, say the pieces are theirs once the payment goes through, not before.
+- For this route you do not need their address - the checkout asks for it and they fill it in there. Do not collect it first. Pass on only what they have already told you of their own accord.
+- items_total in the result is the goods only. Delivery is added on the checkout page, so never read items_total out as the amount they will pay.
+- If they say they have paid, do not confirm it and do not thank them for a payment you have not seen. Say you will confirm as soon as the store does - you are told when the payment comes through.
+- If the result comes back rejected or unavailable, say the payment link is not working right now and offer cash on delivery instead.
 
 HOW LONG DELIVERY TAKES
 - Some tool results carry delivery_period, with min_days, max_days and working_days. That is the only place a delivery time may come from. Say it as a range - "من 3 ل 5 أيام عمل" or "3 to 5 working days" - using working days or ordinary days as the result says.
@@ -273,7 +287,6 @@ _NOT_YET_BUILT = """
 CURRENT LIMITATIONS (temporary, while the assistant is still being connected)
 - You cannot change what is in an order once it is placed - only cancel it, and \
 only before it ships.
-- You cannot take card or online payment yet.
 - If a customer asks for any of these, say it is not available through this chat yet.
 """
 
@@ -284,6 +297,9 @@ never send them there to order, browse or pay, and never offer a link to it. Say
 "you can order through our website" would send them to a page they cannot get into.
 - Ordering through this chat still works normally - cash on delivery is placed here, not \
 on the website. Only the website itself is unavailable to them.
+- The one exception is the checkout link from create_payment_link. That is a payment \
+page, not the shop, and it opens normally - so send it as usual and never warn them the \
+site is closed.
 """
 
 # A polite last resort when every model and provider in the chain has failed. Bilingual,
@@ -295,7 +311,8 @@ UNAVAILABLE_REPLY = (
 
 
 def build_system_prompt(arrived_order: Optional[Order] = None,
-                       shipped_orders: Optional[List[Order]] = None) -> str:
+                       shipped_orders: Optional[List[Order]] = None,
+                       paid_orders: Optional[List[Order]] = None) -> str:
     """Assemble the system prompt for the current build stage.
 
     Part of it depends on the live store rather than the build step: while the storefront
@@ -305,11 +322,45 @@ def build_system_prompt(arrived_order: Optional[Order] = None,
     prompt = SYSTEM_PROMPT + _TOOL_GUIDANCE + _NOT_YET_BUILT
     if not catalog_service.storefront_is_open():
         prompt += _STOREFRONT_CLOSED
+    if paid_orders:
+        # Before the shipping note: an order has to be paid for before it can ship, and
+        # if both landed in one turn that is the order the customer expects to hear it in.
+        prompt += _paid_note(paid_orders)
     if shipped_orders:
         prompt += _shipped_note(shipped_orders)
     if arrived_order is not None:
         prompt += _arrived_note(arrived_order)
     return prompt
+
+
+def _paid_note(orders: List[Order]) -> str:
+    """Told to the model when a payment link has been paid and the customer said nothing.
+
+    This is the first moment the order actually exists, so it carries the order number
+    the customer has been waiting for. Shopify is the only source of it - the bot cannot
+    see a payment happen, which is why it must never claim one before this note appears.
+    """
+    lines = ["", "THIS CUSTOMER'S ONLINE PAYMENT HAS GONE THROUGH"]
+    for order in orders:
+        pieces = ", ".join(
+            item.title + ((" (" + item.variant_title + ")") if item.variant_title else "")
+            for item in order.items
+        ) or "what they ordered"
+        lines.append("- Their payment was received and order " + order.number
+                     + " is now placed: " + pieces + ". Total paid "
+                     + (order.total + " " + order.currency).strip() + ".")
+    lines += [
+        "- Tell them once, at the start of your reply, in one or two short sentences: the "
+        "payment came through and the order is placed, with the order number - then deal "
+        "with whatever they actually wrote to you about.",
+        "- Give them the order number exactly as written above. It is the first one they "
+        "have had for this order, so it matters that it is right.",
+        "- If a delivery_period rule is given above, you may add how long delivery takes, "
+        "as a range and never as a date. Say nothing else about timing or where it is.",
+        "- Do not repeat this in later messages. They have been told.",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _shipped_note(orders: List[Order]) -> str:
@@ -434,7 +485,15 @@ async def handle_message(
     # Has an order this conversation placed left the shop since they last heard? Same
     # contract: read once per turn, never raises.
     shipped_orders = await orders_service.shipping_news(conversation_id)
-    system_instruction = build_system_prompt(arrived_order, shipped_orders)
+    # Has a payment link handed out here been paid since they last wrote? This also turns
+    # a paid draft into an order of this conversation, which is what makes the shipping
+    # notice and the feedback ask work for an online order too. Never raises.
+    paid_orders = await orders_service.payment_news(conversation_id)
+    for order in paid_orders:
+        # The same promise create_cod_order makes: this conversation is owed feedback on
+        # this order once it has actually arrived. Nothing is asked now.
+        feedback_service.expect_review(conversation_id, order.number)
+    system_instruction = build_system_prompt(arrived_order, shipped_orders, paid_orders)
 
     turns = _to_turns(history, message, images)
     declarations = tools.declarations()
@@ -508,6 +567,12 @@ async def handle_message(
             orders_service.mark_shipping_announced(conversation_id, order.number)
         except Exception:  # noqa: BLE001 - bookkeeping must not fail a delivered reply
             logger.exception("Could not record that %s was announced", order.number)
+    for order in paid_orders:
+        try:
+            orders_service.mark_payment_announced(conversation_id, order.number)
+        except Exception:  # noqa: BLE001 - same trade as above
+            logger.exception("Could not record that payment for %s was announced",
+                             order.number)
 
     return AgentReply(
         conversation_id=conversation_id,

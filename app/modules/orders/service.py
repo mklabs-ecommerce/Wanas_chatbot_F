@@ -1,7 +1,8 @@
 """Orders module - the public surface for anything about a customer's orders.
 
-Read-only for now: looking an order up by number, or listing a customer's recent orders.
-Order *creation* (draft orders and cash on delivery) arrives in later build steps.
+Looking an order up by number, listing a customer's recent orders, creating one for
+cash on delivery, handing out a payment link for the customers who would rather pay
+online, and cancelling an order that has not shipped.
 
 Two things this module owns that the raw Shopify client deliberately does not:
 
@@ -30,7 +31,7 @@ from app.integrations.shopify.client import (
 from app.modules.catalog import service as catalog_service
 from app.modules.catalog.service import CatalogUnavailable
 from app.modules.orders import governorates, repository, shipping
-from app.modules.orders.schemas import LineItem, Order, Tracking
+from app.modules.orders.schemas import Draft, LineItem, Order, Tracking
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,20 @@ async def get_orders_by_customer(
             logger.debug("Discarded loosely-matched order %s", order.number)
 
     return matched[:limit]
+
+
+async def lookup_by_id(order_id: str) -> Optional[Order]:
+    """One order by its Shopify id, for code that already holds one.
+
+    Bypasses the order search, which lags: an order created moments ago is not findable
+    by number yet, and a caller that concludes "no such order" from that is wrong.
+    Staff-side like ``lookup_for_staff`` - an id cannot be guessed the way a number can,
+    but nothing here is reachable from a model-supplied argument either.
+    """
+    if not order_id:
+        return None
+    node = await _shopify().fetch_order(order_id)
+    return _to_order(node) if node else None
 
 
 async def lookup_for_staff(order_number: str) -> Optional[Order]:
@@ -288,7 +303,8 @@ def _to_order(node: Dict[str, Any]) -> Order:
     customer = node.get("customer") or {}
     tags = [str(tag).strip().lower() for tag in (node.get("tags") or [])]
 
-    tracking, estimated = _shipment(node.get("fulfillments") or [])
+    fulfillments = node.get("fulfillments") or []
+    tracking, estimated = _shipment(fulfillments)
 
     return Order(
         id=str(node.get("id") or ""),
@@ -310,6 +326,7 @@ def _to_order(node: Dict[str, Any]) -> Order:
         ships_to_country=address.get("country"),
         cash_on_delivery=any(tag in _COD_TAGS for tag in tags),
         estimated_delivery=estimated,
+        carrier_delivered=_carrier_delivered(fulfillments),
         items=[
             LineItem(
                 title=str(item.get("title") or ""),
@@ -321,6 +338,20 @@ def _to_order(node: Dict[str, Any]) -> Order:
         ],
         tracking=tracking,
     )
+
+
+def _carrier_delivered(fulfillments: Sequence[Dict[str, Any]]) -> bool:
+    """Whether a courier has reported the parcel handed over.
+
+    Empty for a courier with no Shopify integration, which is most of them here - so
+    this is a fact when it is present and never an inference when it is not.
+    """
+    for fulfillment in fulfillments:
+        if fulfillment.get("deliveredAt"):
+            return True
+        if str(fulfillment.get("displayStatus") or "").upper() == "DELIVERED":
+            return True
+    return False
 
 
 def _shipment(fulfillments: Sequence[Dict[str, Any]]):
@@ -566,6 +597,15 @@ def pieces_ordered_in_conversation(conversation_id: str) -> int:
     return repository.piece_count_for(conversation_id)
 
 
+def unpaid_links_in_conversation(conversation_id: str) -> int:
+    """Payment links handed out here that have not been paid. Local only.
+
+    Worth showing the owner: a customer who got as far as a checkout and did not pay is
+    a sale that nearly happened, and nothing else in the app would ever mention it.
+    """
+    return len(repository.unsettled_drafts(conversation_id))
+
+
 async def orders_for_conversation(conversation_id: str) -> List[Order]:
     """Every order placed during this conversation, read live from Shopify.
 
@@ -586,6 +626,350 @@ async def orders_for_conversation(conversation_id: str) -> List[Order]:
         if order is not None:
             orders.append(order)
     return orders
+
+
+# --- online payment --------------------------------------------------------
+#
+# The other half of Section 1's payment story. Cash on delivery creates a real order
+# outright; online payment cannot, because the money has not arrived yet. So the bot
+# creates a *draft* - a priced basket with a checkout link the customer opens themselves
+# - and nothing exists in the shop until they pay through it.
+#
+# That shape is deliberate, and it is what keeps this safe: the bot never sees a card
+# number, never handles one, and has no way to. Anyone typing card details into the chat
+# is doing something the assistant must refuse, which is stated in the prompt.
+#
+# Verified against the live store on 2026-08-19: a draft's invoiceUrl reaches the
+# checkout directly even while the storefront is password-protected, so this path works
+# before the shop is published. That is the one fact this whole feature rests on.
+
+
+async def create_draft_order(
+    items: Sequence[RequestedItem],
+    customer_name: Optional[str] = None,
+    phone: Optional[str] = None,
+    email: Optional[str] = None,
+    address1: Optional[str] = None,
+    address2: Optional[str] = None,
+    city: Optional[str] = None,
+    governorate: Optional[str] = None,
+    note: Optional[str] = None,
+    channel: str = "web",
+    conversation_id: str = "",
+) -> Draft:
+    """Create a payment link for these pieces, and return it. Nothing is ordered yet.
+
+    Unlike ``create_cod_order`` the delivery details are optional: the Shopify checkout
+    collects and validates them itself, and asking for them twice is a way to lose a
+    customer between the two. Anything they have already given is passed through so the
+    checkout arrives filled in.
+
+    The variants are still resolved from the live catalog, so a link can never be handed
+    out for a size that does not exist or has just sold out.
+    """
+    if not settings.online_payment_configured:
+        raise OrdersUnavailable("Online payment is not switched on for this store.")
+
+    items = list(items or [])
+    if not items:
+        raise OrderRejected("No items were given.")
+    if len(items) > MAX_ITEMS_PER_ORDER:
+        raise OrderRejected("An order may have at most "
+                            + str(MAX_ITEMS_PER_ORDER) + " different items.")
+
+    phone = (phone or "").strip()
+    if phone and not _phone_key(phone):
+        raise OrderRejected("That phone number does not look complete.")
+
+    lines = []
+    for item in items:
+        quantity = _quantity(item.quantity)
+        try:
+            product, variant = await catalog_service.resolve_variant(
+                item.product, size=item.size, color=item.color)
+        except catalog_service.VariantNotFound as exc:
+            raise OrderRejected(str(exc), {"available": exc.available}) from exc
+        except CatalogUnavailable as exc:
+            raise OrdersUnavailable(str(exc)) from exc
+        lines.append((product, variant, quantity))
+
+    existing = await _open_draft_for(conversation_id, lines)
+    if existing is not None:
+        # The same basket, still unpaid, in the same conversation. Handing out a second
+        # link invites the customer to pay twice for one order.
+        logger.info("Reusing payment link %s rather than issuing a second", existing.name)
+        return existing
+
+    payload = _draft_payload(lines, customer_name, phone, email, address1, address2,
+                             city, governorate, note, channel)
+    logger.info("Creating payment link for %d line(s) in conversation %s",
+                len(lines), conversation_id or "unknown")
+
+    try:
+        node = await _shopify().create_draft_order(payload)
+    except ShopifyRejected as exc:
+        logger.error("Shopify refused the draft order: %s", exc)
+        raise OrderRejected("The payment link could not be created: " + str(exc)) from exc
+    except ShopifyError as exc:
+        logger.error("Draft order creation failed: %s", exc)
+        raise OrdersUnavailable(str(exc)) from exc
+
+    draft = _to_draft(node)
+    if not draft.checkout_url:
+        # A draft with no link is useless to the customer, and pretending otherwise
+        # would leave them waiting for something that never arrives.
+        logger.error("Shopify returned draft %s with no invoice URL", draft.name)
+        raise OrdersUnavailable("Shopify did not return a payment link.")
+    logger.info("Payment link %s created (%s %s)", draft.name, draft.total, draft.currency)
+
+    try:
+        repository.link_draft(conversation_id, draft.id, draft.name, channel,
+                              item_count=draft.piece_count)
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must not cost the link
+        logger.warning("Could not record payment link %s against conversation %s: %s",
+                       draft.name, conversation_id or "unknown", exc)
+    return draft
+
+
+def _draft_payload(lines, customer_name, phone, email, address1, address2, city,
+                   governorate, note, channel) -> Dict[str, Any]:
+    """Build the Shopify draft input. As with COD, prices are never sent."""
+    tags = list(settings.online_order_tags)
+    channel = (channel or "").strip().lower()
+    if channel and channel not in tags:
+        tags.append(channel)
+
+    payload: Dict[str, Any] = {
+        # Said explicitly for the same reason orderCreate needs it: these are garments,
+        # and a line that claims it needs no delivery produces a checkout with no
+        # shipping step and an order nobody knows how to send.
+        "lineItems": [{"variantId": variant.id, "quantity": quantity,
+                       "requiresShipping": True}
+                      for _product, variant, quantity in lines],
+        "tags": tags,
+        "note": _staff_note(channel, phone or "", note, payment="Paid online"),
+    }
+    if email:
+        payload["email"] = email
+    if phone:
+        payload["phone"] = to_e164(phone)
+
+    address = _draft_address(customer_name, phone, address1, address2, city, governorate)
+    if address is not None:
+        # Only ever a head start on the checkout form; the customer can change all of it.
+        payload["shippingAddress"] = address
+    return payload
+
+
+def _draft_address(customer_name, phone, address1, address2, city,
+                   governorate) -> Optional[Dict[str, Any]]:
+    """Whatever the customer has already said about delivery, or None if too little.
+
+    A half-filled address is worse than an empty one: the checkout would show it as
+    complete and the customer would click past it.
+    """
+    address1 = (address1 or "").strip()
+    city = (city or "").strip()
+    if not (address1 and city):
+        return None
+
+    first, _, last = (customer_name or "").strip().partition(" ")
+    address: Dict[str, Any] = {
+        "address1": address1,
+        "city": city,
+        "countryCode": settings.store_country_code,
+    }
+    if first:
+        address["firstName"] = first
+        address["lastName"] = last.strip() or first
+    if address2:
+        address["address2"] = address2
+    if phone:
+        address["phone"] = to_e164(phone)
+    province = governorates.resolve(governorate) or governorates.resolve(city)
+    if province:
+        address["provinceCode"] = province
+    return address
+
+
+async def _open_draft_for(conversation_id: str, lines) -> Optional[Draft]:
+    """An unpaid link already issued in this conversation for exactly these pieces.
+
+    Checked against Shopify rather than local memory, so it survives a restart and
+    notices a link the owner has since deleted or completed by hand.
+
+    Deliberately not time-limited, unlike the cash-on-delivery duplicate check. An old
+    link is still a live way to pay: expiring it here would leave two open links for one
+    basket, and a customer who pays both has paid twice for one parcel. What does end
+    the reuse is the price - a draft holds the price it was created at, so once the
+    catalog disagrees with it the link is stale and a fresh one is made instead.
+    """
+    if not conversation_id:
+        return None
+
+    wanted = sorted((variant.id, quantity) for _product, variant, quantity in lines)
+    price_now = _subtotal(lines)
+
+    for row in repository.unsettled_drafts(conversation_id):
+        try:
+            node = await _shopify().fetch_draft_order(row["draft_id"])
+        except Exception as exc:  # noqa: BLE001 - a failed check must not block a sale
+            logger.warning("Could not re-read draft %s: %s", row["draft_id"], exc)
+            continue
+        if node is None:
+            continue
+        draft = _to_draft(node)
+        if draft.paid or draft.status.upper() not in ("OPEN", "INVOICE_SENT"):
+            continue
+        if sorted(_draft_variants(node)) != wanted:
+            continue
+        if not _same_money(draft.subtotal, price_now):
+            logger.info("Payment link %s is priced at %s, the catalog now says %s - "
+                        "issuing a fresh one", draft.name, draft.subtotal, price_now)
+            continue
+        return draft
+    return None
+
+
+def _same_money(amount: str, expected: float) -> bool:
+    """Whether a Shopify amount still matches what the catalog charges today."""
+    try:
+        return abs(float(amount) - expected) < 0.01
+    except (TypeError, ValueError):
+        return False
+
+
+def _draft_variants(node: Dict[str, Any]) -> List[Any]:
+    """(variant id, quantity) for each line, for comparing one basket with another."""
+    pairs = []
+    for line in (node.get("lineItems") or {}).get("nodes") or []:
+        variant = line.get("variant") or {}
+        if variant.get("id"):
+            pairs.append((variant["id"], int(line.get("quantity") or 0)))
+    return pairs
+
+
+def _to_draft(node: Dict[str, Any]) -> Draft:
+    """Shopify's draft-order JSON in our shape. The only place that reads it."""
+    total, currency = _money(node.get("totalPriceSet"))
+    subtotal, _ = _money(node.get("subtotalPriceSet"))
+    delivery, _ = _money(node.get("totalShippingPriceSet"))
+    order = node.get("order") or {}
+
+    items = [
+        LineItem(
+            title=line.get("title") or "",
+            quantity=int(line.get("quantity") or 0),
+            variant_title=line.get("variantTitle"),
+            sku=line.get("sku"),
+        )
+        for line in (node.get("lineItems") or {}).get("nodes") or []
+    ]
+    return Draft(
+        id=node.get("id") or "",
+        name=node.get("name") or "",
+        checkout_url=node.get("invoiceUrl") or "",
+        status=node.get("status") or "OPEN",
+        total=total,
+        subtotal=subtotal,
+        delivery=delivery,
+        currency=currency or node.get("currencyCode") or settings.store_currency,
+        order_number=order.get("name") or None,
+        order_id=order.get("id") or None,
+        items=items,
+        created_at=_date(node.get("createdAt")),
+    )
+
+
+async def payment_news(conversation_id: str) -> List[Order]:
+    """Payment links from this conversation that have since been paid, told once.
+
+    Two jobs, in order: find out what became of every link still outstanding, then
+    report the ones that turned into an order and have not been mentioned.
+
+    The paid order is linked into this conversation as a real order at that moment, so
+    everything that already follows an order - the shipping notice, the feedback ask,
+    the owner's dashboard - picks it up with no further work.
+
+    Never raises. Like the other per-turn checks this runs on the way into an ordinary
+    customer turn, so Shopify being slow costs the news, not the conversation.
+    """
+    if not conversation_id:
+        return []
+
+    try:
+        await _settle_drafts(conversation_id)
+    except Exception as exc:  # noqa: BLE001 - never break a chat over this
+        logger.warning("Could not check payment links for %s: %s", conversation_id, exc)
+
+    news: List[Order] = []
+    try:
+        pending = repository.drafts_awaiting_payment_news(conversation_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not read pending payment news: %s", exc)
+        return []
+
+    for row in pending:
+        number = row["order_number"]
+        try:
+            order = await _paid_order(row)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read paid order %s: %s", number, exc)
+            continue
+        if order is None:
+            # Not "no such order" - only "not readable right now". Marking it told here
+            # is how the news was lost once: the order search had not caught up with an
+            # order half a second old, and the customer was never told they had paid.
+            logger.warning("Paid order %s is not readable yet; will try again", number)
+            continue
+        if order.is_cancelled:
+            # Nothing to celebrate, and nothing to keep checking.
+            repository.mark_payment_told(conversation_id, number)
+            continue
+        news.append(order)
+    return news
+
+
+async def _paid_order(row: Dict[str, Any]) -> Optional[Order]:
+    """Read a paid order, by id where we have one and by number otherwise."""
+    if row.get("order_id"):
+        return await lookup_by_id(row["order_id"])
+    return await lookup_for_staff(row["order_number"])
+
+
+async def _settle_drafts(conversation_id: str) -> None:
+    """Re-read every outstanding link and record what became of it."""
+    for row in repository.unsettled_drafts(conversation_id):
+        draft_id = row["draft_id"]
+        try:
+            node = await _shopify().fetch_draft_order(draft_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not re-read draft %s: %s", draft_id, exc)
+            continue
+
+        if node is None:
+            # Deleted in the admin. There is nothing left to wait for.
+            logger.info("Payment link %s is gone from Shopify",
+                        row["draft_name"] or draft_id)
+            repository.settle_draft(conversation_id, draft_id)
+            continue
+
+        draft = _to_draft(node)
+        if not draft.paid:
+            continue
+
+        logger.info("Payment link %s was paid and became order %s",
+                    draft.name, draft.order_number)
+        repository.settle_draft(conversation_id, draft_id, draft.order_number,
+                                draft.order_id)
+        # From here on it is an ordinary order of this conversation.
+        repository.link(conversation_id, draft.order_number or "", row["channel"],
+                        item_count=draft.piece_count)
+
+
+def mark_payment_announced(conversation_id: str, order_number: str) -> None:
+    """Remember the customer has been told their payment came through."""
+    repository.mark_payment_told(conversation_id, order_number)
 
 
 # --- cancelling ------------------------------------------------------------
@@ -843,11 +1227,18 @@ async def _find_customer(phone: str, email: Optional[str]) -> Optional[str]:
     return None
 
 
-def _staff_note(channel: str, phone: str, customer_note: Optional[str]) -> str:
-    """A line for whoever picks and delivers the parcel."""
-    parts = ["Chatbot order (" + (channel or "web") + "). Cash on delivery.",
-             # As the customer gave it, which is how staff will hear it read back.
-             "Phone: " + phone]
+def _staff_note(channel: str, phone: str, customer_note: Optional[str],
+                payment: str = "Cash on delivery") -> str:
+    """A line for whoever picks and delivers the parcel.
+
+    ``payment`` is stated because the two routes need opposite things of the courier:
+    one has money to collect at the door and the other does not. A note that says "cash
+    on delivery" on an order that is already paid gets money asked for twice.
+    """
+    parts = ["Chatbot order (" + (channel or "web") + "). " + payment + "."]
+    if phone:
+        # As the customer gave it, which is how staff will hear it read back.
+        parts.append("Phone: " + phone)
     if customer_note:
         parts.append("Customer note: " + customer_note.strip()[:300])
     return " ".join(parts)

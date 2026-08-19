@@ -121,7 +121,7 @@ No colloquial Egyptian. The full prompt, with its honesty and payment-safety rul
 - [x] 4. `modules/orders` read-only lookups
 - [x] 5. Image upload through `POST /chat`
 - [x] 6. `catalog.service.identify_product_from_image()`
-- [ ] 7. `orders.service.create_draft_order()`
+- [x] 7. `orders.service.create_draft_order()` - online payment by checkout link
 - [x] 8. `orders.service.create_cod_order()`
 - [x] 9. `modules/support` + `modules/notifications`
 - [x] 10. `modules/feedback`

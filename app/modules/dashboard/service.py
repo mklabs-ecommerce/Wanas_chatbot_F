@@ -60,6 +60,8 @@ def overview(limit: int = DEFAULT_CONVERSATION_LIMIT,
             "ticket_count": len(support_service.tickets_for_conversation(conversation_id)),
             "feedback_count": len(feedback),
             "piece_count": orders_service.pieces_ordered_in_conversation(conversation_id),
+            # A checkout link that was never paid - a sale that nearly happened.
+            "unpaid_link_count": orders_service.unpaid_links_in_conversation(conversation_id),
             # So a row with an unhappy customer can be spotted without opening it.
             "worst_sentiment": _worst(feedback),
         })
