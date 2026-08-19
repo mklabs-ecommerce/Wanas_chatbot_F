@@ -197,6 +197,20 @@ in by the model and proves nothing on its own.
 `ToolContext` carries what the model must not choose (attached images, channel,
 conversation id); only handlers marked `wants_context` receive it.
 
+### How long delivery takes
+
+**Shopify has no field for it.** Verified 2026-08-19 against the live store: one Domestic
+zone covering all 29 governorates, one rate named `قياسي`, `description` null. The
+`shopPolicies` field exists but the token lacks `read_legal_policies`, and a policy page
+is prose anyway. So the period is configuration — `delivery_days_min`/`max` — and the
+owner's answer was that it is the same everywhere (3–5 working days).
+
+`orders.service.delivery_period()` returns `None` rather than a guess when unset, and both
+`create_cod_order` and `get_delivery_cost` attach `delivery_period` to their result only
+when it is known. The prompt allows a delivery time **only** from that field, still forbids
+inventing a date, and forbids turning the range into a calendar day. The original
+"never estimate a delivery date" rule survives — this is a narrow, sourced exception to it.
+
 ### Cancelling an order (`orders.service.cancel_order`)
 
 The second irreversible thing the bot does, and the rule is `policy.md` verbatim:

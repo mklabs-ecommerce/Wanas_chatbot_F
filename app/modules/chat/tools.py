@@ -394,6 +394,10 @@ async def _get_delivery_cost(arguments: Dict[str, Any]) -> Dict[str, Any]:
         "method": rate["title"],
         "cost": rate["amount"] + " " + rate["currency"],
     }
+    period = orders_service.delivery_period()
+    if period:
+        # A customer asking about delivery usually wants both the price and the wait.
+        payload["delivery_period"] = period
     if total > 0:
         # The finished figures, so nothing is left for the model to add up or recall.
         # It once reported a delivery charge of its own invention alongside a correct
@@ -549,7 +553,13 @@ async def _create_cod_order(
     # actually arrived. Nothing is asked now; see feedback.service.review_due().
     feedback_service.expect_review(context.conversation_id, order.number)
 
-    return {"created": True, "order": order.to_tool_dict()}
+    payload = {"created": True, "order": order.to_tool_dict()}
+    period = orders_service.delivery_period()
+    if period:
+        # Included here so the confirmation and the timing come from one result. Absent
+        # when nobody has configured it, and the prompt then says nothing about timing.
+        payload["delivery_period"] = period
+    return payload
 
 
 CANCEL_ORDER = {

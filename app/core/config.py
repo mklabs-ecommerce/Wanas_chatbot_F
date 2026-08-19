@@ -123,6 +123,20 @@ class Settings(BaseSettings):
     # changed their mind, and the owner should not read it twice.
     feedback_duplicate_window_seconds: float = 1800.0
 
+    # --- How long delivery takes ------------------------------------------
+    # Shopify does not carry this. Checked 2026-08-19: the store has one Domestic zone
+    # covering all 29 governorates with a single rate named "قياسي", whose description
+    # is empty - there is no delivery-time field to read. So the owner states it here.
+    #
+    # The same for every governorate, by the owner's answer. Leave both at 0 and the bot
+    # says nothing about timing rather than guessing - which is the rule that exists
+    # because it once invented delivery dates.
+    delivery_days_min: int = 0
+    delivery_days_max: int = 0
+    # Whether those are working days (Sun-Thu here) or calendar days. Changes the words
+    # the bot uses, nothing else.
+    delivery_working_days: bool = True
+
     # --- Owner dashboard --------------------------------------------------
     # The dashboard shows customer names, phones, delivery addresses and whole
     # transcripts, so it is off unless a token is set - never open by default. Set it to
@@ -175,6 +189,11 @@ class Settings(BaseSettings):
     def email_configured(self) -> bool:
         """Email notifications need a server, a sender and a recipient to be useful."""
         return bool(self.smtp_host and self.smtp_from and self.store_owner_email)
+
+    @property
+    def delivery_period_known(self) -> bool:
+        """Whether there is a real delivery window to quote."""
+        return self.delivery_days_min > 0 and self.delivery_days_max >= self.delivery_days_min
 
     @property
     def dashboard_enabled(self) -> bool:

@@ -1,6 +1,6 @@
 # Wanas Gallery Chatbot — What It Does, What's Next
 
-**Status as of 2026-08-19** — 401 automated tests passing, running locally at
+**Status as of 2026-08-19** — 417 automated tests passing, running locally at
 `http://127.0.0.1:8000`, connected to the live Shopify store `p0hd05-m5`.
 
 This document is written for deciding what to build next. It covers what the bot can
@@ -90,6 +90,18 @@ Read live from the store's own shipping rates, by governorate. The bot is requir
 check this *before* reading an order back, because with cash on delivery the customer
 hands the courier the goods plus delivery, so they must be told the full figure before
 agreeing. If the rate cannot be read, it says so rather than naming a number.
+
+**How long it takes** is stated too — right after confirming an order, and any time a
+customer asks. Currently **3 to 5 working days**, the same for every governorate.
+
+That figure lives in `.env` (`DELIVERY_DAYS_MIN` / `DELIVERY_DAYS_MAX`), not in Shopify —
+checked on 2026-08-19, Shopify carries no delivery time at all: the store has one Domestic
+zone covering all 29 governorates with a single rate whose description is empty. Change
+those two values and the bot changes what it says.
+
+If they are ever left unset the bot says it cannot say exactly and the team will confirm.
+It never names a number of days that did not come from a tool, and it never turns the
+range into a date — no "it will arrive Tuesday".
 
 ### 1.6 Placing a cash-on-delivery order
 
@@ -226,6 +238,8 @@ All in `.env`:
 | `ORDERS_REQUIRE_CONTACT_VERIFICATION` | `true` | The order-privacy check in §1.4 |
 | `CATALOG_CACHE_SECONDS` | 300 | How long the catalog is cached |
 | `CHAT_HISTORY_LIMIT` | 20 | Messages of context the bot remembers |
+| `DELIVERY_DAYS_MIN` / `MAX` | 3 / 5 | The delivery window the bot quotes |
+| `DASHBOARD_TOKEN` | set | Turns the owner dashboard on; 16+ chars |
 | `STORE_OWNER_EMAIL` | `mklabsecommerce@gmail.com` | Who gets support tickets |
 
 ---

@@ -501,6 +501,25 @@ async def create_cod_order(
     return order
 
 
+def delivery_period() -> Optional[Dict[str, Any]]:
+    """How long delivery takes, or None if nobody has said.
+
+    Shopify has no field for this - checked 2026-08-19 against the live store, whose one
+    Domestic zone covers all 29 governorates with a single unnamed-duration rate - so it
+    comes from configuration instead.
+
+    Returning None rather than a guess is the point: the prompt forbids stating a
+    delivery time that did not come from a tool, and this is the only tool that has one.
+    """
+    if not settings.delivery_period_known:
+        return None
+    return {
+        "min_days": settings.delivery_days_min,
+        "max_days": settings.delivery_days_max,
+        "working_days": settings.delivery_working_days,
+    }
+
+
 def order_numbers_for_conversation(conversation_id: str) -> List[str]:
     """Just the numbers, without asking Shopify - for counting in a list view."""
     return repository.order_numbers_for(conversation_id)
