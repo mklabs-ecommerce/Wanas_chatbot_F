@@ -1,22 +1,29 @@
-"""Turning what a browser uploads into image bytes the model can be shown.
+"""Turning what a browser uploads into bytes the model can be shown or played.
 
-Images arrive base64-encoded inside the JSON body rather than as a multipart upload.
+Images and voice notes arrive base64-encoded inside the JSON body rather than as a
+multipart upload.
 That keeps one request shape for every channel - a WhatsApp adapter will hand over
 downloaded bytes, not a browser file part - and keeps the endpoint testable with a plain
 JSON client.
 
 Everything here is a guard. The uploader is a stranger, so the declared content type is
-not believed: the bytes are sniffed, and anything that is not a real image Gemini
-accepts is rejected before it reaches the model.
+not believed: the bytes are sniffed, and anything that is not a real image or recording
+Gemini accepts is rejected before it reaches the model.
+
+Sniffing matters more here than it looks. Measured 2026-08-19, Gemini works out for
+itself what audio bytes are and ignores the type we send it - so the label is no
+protection at all, and this file is the only thing standing between a stranger's upload
+and the model.
 """
 
 import base64
 import binascii
 import logging
 import re
+import struct
 from typing import List, Optional, Tuple
 
-from app.integrations.llm_types import ImagePart
+from app.integrations.llm_types import AudioPart, ImagePart
 
 logger = logging.getLogger(__name__)
 
@@ -154,4 +161,202 @@ def sniff_mime_type(data: bytes) -> Optional[str]:
         if brand in _HEIF_BRANDS:
             # HEIC and HEIF share a container; Gemini accepts either label.
             return "image/heic" if brand.startswith(b"he") else "image/heif"
+    return None
+
+
+# --- voice notes -----------------------------------------------------------
+#
+# One recording per turn: a voice note is a spoken message, and a turn is one message.
+
+MAX_VOICE_NOTES = 1
+# Roughly five minutes of the 16 kHz mono WAV the widget sends, or far longer of a
+# compressed recording. Past that it is not a message, it is a file.
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
+# Shorter than this is a slip of the finger on the record button, not speech.
+MIN_AUDIO_BYTES = 512
+
+# What Gemini decodes. Ogg matters for the future rather than for today: it is what
+# WhatsApp voice notes are, so the adapter will hand over ogg/opus and find it already
+# supported. The widget itself converts whatever the browser recorded to WAV, which is
+# the one format every browser can produce and every model reads.
+ALLOWED_AUDIO_TYPES = (
+    "audio/wav",
+    "audio/ogg",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/aac",
+    "audio/flac",
+    "audio/webm",
+)
+
+
+def decode_audio(uploads, *, max_clips: int = MAX_VOICE_NOTES) -> List[AudioPart]:
+    """Validate and decode voice notes, or raise ``AttachmentError``."""
+    uploads = list(uploads or [])
+    if not uploads:
+        return []
+    if len(uploads) > max_clips:
+        raise AttachmentError("Please send one voice note at a time.")
+
+    parts: List[AudioPart] = []
+    for index, upload in enumerate(uploads, start=1):
+        data, declared = _decode_audio_one(upload, index)
+
+        sniffed = sniff_audio_type(data)
+        if sniffed is None:
+            raise AttachmentError(
+                "That recording is not in a format we can play. Please try again, or "
+                "type your message instead."
+            )
+        if declared and declared != sniffed:
+            logger.info("Voice note declared %s but is %s", declared, sniffed)
+
+        if not carries_sound(data):
+            # Never sent to a model: asked to transcribe silence, one will make
+            # something up, and the assistant will answer a message nobody sent.
+            logger.info("Rejected a silent voice note (%d bytes)", len(data))
+            raise AttachmentError(
+                "That recording is silent - the microphone may not have picked "
+                "anything up. Please try again, or type your message."
+            )
+
+        parts.append(AudioPart(data=data, mime_type=sniffed))
+
+    return parts
+
+
+def _decode_audio_one(upload, index: int):
+    """Pull raw bytes and any declared type out of one recording."""
+    raw = getattr(upload, "data", None)
+    declared = getattr(upload, "mime_type", None)
+    if raw is None and isinstance(upload, str):
+        raw = upload
+    if not isinstance(raw, str) or not raw.strip():
+        raise AttachmentError("That recording is empty.")
+
+    raw = raw.strip()
+    found = _DATA_URL.match(raw)
+    if found:
+        declared = declared or found.group("mime")
+        raw = raw[found.end():]
+    raw = re.sub(r"\s+", "", raw)
+
+    # On the encoded length, before anything is expanded in memory.
+    if len(raw) > (MAX_AUDIO_BYTES * 4 // 3) + 8:
+        raise AttachmentError(_audio_too_large())
+
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise AttachmentError("That recording could not be read.") from exc
+
+    if len(data) < MIN_AUDIO_BYTES:
+        raise AttachmentError("That recording is too short to hear. Please try again.")
+    if len(data) > MAX_AUDIO_BYTES:
+        raise AttachmentError(_audio_too_large())
+
+    # A declared type may carry codec parameters ("audio/webm;codecs=opus").
+    declared = (declared or "").lower().split(";")[0].strip() or None
+    return data, declared
+
+
+def _audio_too_large() -> str:
+    return ("That recording is longer than we can take. Please keep it under a few "
+            "minutes, or type your message instead.")
+
+
+# Below this peak amplitude, as a fraction of full scale, there is nothing on the
+# recording. Deliberately low: a softly spoken voice note must not be thrown away, and
+# real microphone noise sits well above it. Digital silence is exactly 0.
+_SILENCE_PEAK = 0.008
+# And this much of the clip has to carry something, so a two-second recording that is
+# silent except for one click is still nothing.
+_SILENCE_FRACTION = 0.001
+
+
+def carries_sound(data: bytes) -> bool:
+    """Whether a recording has anything on it. ``True`` when we cannot tell.
+
+    This exists because the model cannot be trusted to say so. Measured 2026-08-19:
+    asked to transcribe one second of digital silence, gemini-3.7-flash invented a
+    plausible Egyptian sentence three times out of three - and the assistant then
+    answered a message the customer never sent. A prompt forbidding that did not hold.
+
+    So silence is detected here, from the samples, before a request is ever spent on it.
+    Only uncompressed WAV can be measured without decoding, which is what the widget
+    sends; a compressed recording returns ``True`` rather than a guess.
+    """
+    samples = _pcm_samples(data)
+    if samples is None:
+        return True
+
+    total = len(samples)
+    if not total:
+        return False
+
+    floor = int(_SILENCE_PEAK * 32768)
+    loud = sum(1 for value in samples if value > floor or value < -floor)
+    return loud > max(1, int(total * _SILENCE_FRACTION))
+
+
+def _pcm_samples(data: bytes) -> Optional[List[int]]:
+    """16-bit samples out of a PCM WAV, or None if this is not one we can read."""
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return None
+
+    offset = 12
+    fmt = None
+    while offset + 8 <= len(data):
+        name = data[offset:offset + 4]
+        try:
+            size = struct.unpack_from("<I", data, offset + 4)[0]
+        except struct.error:
+            return None
+        body = offset + 8
+
+        if name == b"fmt " and size >= 16:
+            audio_format, _channels, _rate, _bps, _align, bits = struct.unpack_from(
+                "<HHIIHH", data, body)
+            if audio_format != 1 or bits != 16:
+                # Compressed, or a width we are not going to unpack by hand.
+                return None
+            fmt = True
+        elif name == b"data":
+            if fmt is None:
+                return None
+            chunk = data[body:body + size] if size else data[body:]
+            count = len(chunk) // 2
+            if not count:
+                return []
+            return list(struct.unpack_from("<" + str(count) + "h", chunk))
+
+        # Chunks are word-aligned; an odd size carries a pad byte.
+        offset = body + size + (size & 1)
+    return None
+
+
+def sniff_audio_type(data: bytes) -> Optional[str]:
+    """The audio type the bytes actually are, or ``None`` if they are not usable audio."""
+    if len(data) < 12:
+        return None
+
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "audio/wav"
+    if data[:4] == b"OggS":
+        # Opus or Vorbis inside; Gemini reads the container either way.
+        return "audio/ogg"
+    if data[:4] == b"fLaC":
+        return "audio/flac"
+    if data[:4] == b"\x1a\x45\xdf\xa3":
+        # EBML - a WebM recording, which is what Chrome's MediaRecorder produces.
+        return "audio/webm"
+    if data[4:8] == b"ftyp":
+        return "audio/mp4"
+    if data[:3] == b"ID3":
+        return "audio/mpeg"
+    # A bare MPEG frame header: 11 sync bits, then a version that is not the reserved one.
+    if data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        if (data[1] & 0x18) != 0x08:
+            # ADTS AAC shares the sync word and is told apart by its layer bits.
+            return "audio/aac" if (data[1] & 0x06) == 0 else "audio/mpeg"
     return None

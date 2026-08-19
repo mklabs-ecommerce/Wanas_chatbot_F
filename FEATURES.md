@@ -1,6 +1,6 @@
 # Wanas Gallery Chatbot — What It Does, What's Next
 
-**Status as of 2026-08-19** — 482 automated tests passing, running locally at
+**Status as of 2026-08-19** — 522 automated tests passing, running locally at
 `http://127.0.0.1:8000`, connected to the live Shopify store `p0hd05-m5`.
 
 This document is written for deciding what to build next. It covers what the bot can
@@ -68,7 +68,39 @@ Fail any one, and the bot shows the candidates and *asks* instead of guessing.
 Photos are never stored. History records `[image]`, and the photo lives only for the turn
 it arrived on.
 
-### 1.4 Checking an order
+### 1.4 Understanding voice notes
+
+Customers can hold the microphone button and talk instead of typing — which in Egypt is
+how a lot of people prefer to shop. The recording is listened to, written down, and then
+answered exactly like a typed message.
+
+Tested on a real Egyptian Arabic voice note:
+
+> **spoken:** عايزة أطلب التيشيرت البني مقاس لارج ورقم تليفوني صفر واحد صفر اتنين واحد اتنين خمسة خمسة ستة تمانية سبعة
+> **heard:** عايزة أطلب التيشيرت البني مقاس لارج ورقم تليفوني 01021255687
+
+The phone number spoken as words comes back as digits, which is the whole point — that is
+what a customer actually does.
+
+The words are kept, not the recording. So "the one I told you about" still means something
+in the next message, the owner's dashboard shows what was said, and a support ticket
+quotes real words.
+
+**A transcript is treated as something that could be wrong.** Anything spoken that is
+going onto an order — the piece, the size, the name, the address, the phone — has to be
+read back first, and a phone number digit by digit. The customer also sees their own words
+in the chat as soon as the bot has them, so a mishearing is obvious immediately.
+
+**Silence is refused rather than answered.** This turned out to matter: asked to transcribe
+one second of silence, the strongest model tested invented a whole Egyptian sentence three
+times out of three, and the bot cheerfully replied to a message nobody sent. Recordings are
+now checked for actual sound before any model hears them, and an empty one gets "the
+microphone may not have picked anything up" instead.
+
+Limits: one voice note per message, up to about five minutes, and recording stops itself
+after two minutes so a forgotten open microphone does not upload the rest of the day.
+
+### 1.5 Checking an order
 
 - Look up by **order number**, or list a customer's recent orders by **email or phone**.
 - Returns status, payment state, items with sizes and colours, totals, delivery city and
@@ -84,7 +116,7 @@ order numbers are real.
 
 No street address, no internal note, no staff tag and no Shopify ID ever reaches the model.
 
-### 1.5 Quoting delivery
+### 1.6 Quoting delivery
 
 Read live from the store's own shipping rates, by governorate. The bot is required to
 check this *before* reading an order back, because with cash on delivery the customer
@@ -103,7 +135,7 @@ If they are ever left unset the bot says it cannot say exactly and the team will
 It never names a number of days that did not come from a tool, and it never turns the
 range into a date — no "it will arrive Tuesday".
 
-### 1.6 Placing a cash-on-delivery order
+### 1.7 Placing a cash-on-delivery order
 
 The bot can create a **real order in Shopify**. It collects name, phone, street address,
 city and governorate, reads the whole thing back, and only creates the order once the
@@ -126,7 +158,7 @@ Guards that make this safe:
 - Egyptian governorate is matched from Arabic or English across all 29, and phone numbers
   are converted to international format, both of which Shopify silently requires.
 
-### 1.7 Paying online by card
+### 1.8 Paying online by card
 
 The customer can pay by card instead of cash. The bot asks which they want, then creates
 a **Shopify checkout link** for the pieces they chose and sends it. They pay on Shopify's
@@ -164,7 +196,7 @@ The address is **not** collected in chat for this route. The Shopify checkout as
 and validates it, and asking twice loses people in between. Anything they already
 volunteered is passed through so the checkout arrives part-filled.
 
-### 1.8 Cancelling an order, and exchanges
+### 1.9 Cancelling an order, and exchanges
 
 Straight from `policy.md`.
 
@@ -189,7 +221,7 @@ process, so the bot states the terms and files a ticket for you:
 
 It is forbidden to waive a fee, soften the terms, or promise an exchange will be accepted.
 
-### 1.9 Telling a customer their order shipped
+### 1.10 Telling a customer their order shipped
 
 When Shopify marks an order fulfilled, the customer is told once — with the tracking
 number if there is one.
@@ -205,7 +237,7 @@ number if there is one.
 conversation, so the bot can only tell them when they next write in. The detection half
 is done and tested; when WhatsApp is connected, the same logic sends it directly.
 
-### 1.10 Support tickets
+### 1.11 Support tickets
 
 When the bot cannot resolve something, it files a ticket and emails the store owner.
 
@@ -231,7 +263,7 @@ The email carries far more than the ticket itself:
 The same issue in the same conversation within 30 minutes returns the existing ticket
 rather than filing again.
 
-### 1.11 Recording what customers think
+### 1.12 Recording what customers think
 
 Separate from support tickets on purpose: a ticket is a problem awaiting an action,
 feedback is an opinion awaiting nothing. Anything the customer wants fixed, replaced,
@@ -257,7 +289,7 @@ refunded or chased stays a ticket.
   code would invite the customer to expect a reply that is not coming.
 - One conversation is one opinion, so saying thank you twice is recorded once.
 
-### 1.12 Honesty guarantees
+### 1.13 Honesty guarantees
 
 These are the rules that stop the bot inventing things, and each one exists because of a
 real bug that happened:
@@ -283,6 +315,8 @@ All in `.env`:
 |---|---|---|
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` | The model that answers |
 | `GEMINI_VISION_MODEL` | `gemini-3.5-flash-lite` | The model that reads photos |
+| `GEMINI_TRANSCRIPTION_MODEL` | `gemini-2.5-flash` | The model that listens to voice notes |
+| `VOICE_NOTES` | `true` | Accept voice notes at all. Off hides the record button |
 | `GEMINI_FALLBACK_MODELS` | `[]` (none) | Models to try when the first is out of quota |
 | `COD_SHIPPING_FEE` | unset | A flat delivery charge, if you want one |
 | `COD_ORDER_TAGS` | `cash-on-delivery`, `chatbot` | How bot orders are tagged in Shopify |
@@ -291,7 +325,7 @@ All in `.env`:
 | `ONLINE_ORDER_TAGS` | `online-payment`, `chatbot` | How card-paid orders are tagged in Shopify |
 | `TICKET_DUPLICATE_WINDOW_SECONDS` | 1800 (30 min) | Duplicate-ticket window |
 | `FEEDBACK_DUPLICATE_WINDOW_SECONDS` | 1800 (30 min) | Duplicate-feedback window |
-| `ORDERS_REQUIRE_CONTACT_VERIFICATION` | `true` | The order-privacy check in §1.4 |
+| `ORDERS_REQUIRE_CONTACT_VERIFICATION` | `true` | The order-privacy check in §1.5 |
 | `CATALOG_CACHE_SECONDS` | 300 | How long the catalog is cached |
 | `CHAT_HISTORY_LIMIT` | 20 | Messages of context the bot remembers |
 | `DELIVERY_DAYS_MIN` / `MAX` | 3 / 5 | The delivery window the bot quotes |
@@ -306,8 +340,8 @@ All in `.env`:
 
 | # | Feature | Status |
 |---|---|---|
-| 7 | **Online card payment** — a Shopify draft order and a real checkout link | **Built** (2026-08-19). See §1.7. The password wall turned out not to block a checkout link, so this did not have to wait for the store to open. |
-| 10 | **Feedback module** — record what customers think | **Built** (2026-08-19). See §1.11. |
+| 7 | **Online card payment** — a Shopify draft order and a real checkout link | **Built** (2026-08-19). See §1.8. The password wall turned out not to block a checkout link, so this did not have to wait for the store to open. |
+| 10 | **Feedback module** — record what customers think | **Built** (2026-08-19). See §1.12. |
 | 11 | **Verify channel attribution** in the Shopify admin | Orders #1004 and #1006 are sitting there to check. |
 
 ### 3.2 Things the bot tells customers it cannot do
@@ -369,7 +403,7 @@ every one of those becomes an email for a human. Within a safe window — before
 same day — the bot could cancel and restock in Shopify directly. This is probably the
 most-requested thing it currently cannot do.
 
-**e) ~~Build the feedback module (step 10).~~** **Done 2026-08-19** — see §1.11.
+**e) ~~Build the feedback module (step 10).~~** **Done 2026-08-19** — see §1.12.
 Worth pairing with (f) below: feedback is being collected now, but there is still no way
 to read it back other than the emails for unhappy customers.
 
@@ -393,9 +427,14 @@ sale.
 products, questions the bot could not answer. Reuses the notifications module that
 already exists.
 
-**j) Arabic voice notes.** Egyptian customers overwhelmingly prefer voice over typing.
-This only becomes relevant alongside a messaging channel, which is out of scope today —
-but it is worth knowing it is the natural next step if that ever changes.
+**j) ~~Arabic voice notes.~~** **Done 2026-08-19** — see §1.4. It turned out not to need
+a messaging channel at all: the web widget records perfectly well, and the same pipeline
+will take WhatsApp's ogg voice notes unchanged when that arrives.
+
+**k) Replying by voice.** The bot understands speech but still answers in text. Speaking
+back is a separate piece of work — Gemini has text-to-speech models, and the same
+Egyptian-Arabic care would be needed for the voice itself. Worth deciding on rather than
+assuming: plenty of customers send voice notes and would rather read the answer.
 
 ---
 

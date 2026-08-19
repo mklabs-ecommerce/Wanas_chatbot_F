@@ -13,6 +13,7 @@ from typing import List, Optional, Sequence
 from app.core.config import settings
 from app.integrations import llm
 from app.integrations.llm_types import (
+    AudioPart,
     ImagePart,
     LLMAllProvidersFailed,
     ToolCall,
@@ -23,7 +24,7 @@ from app.modules.catalog import service as catalog_service
 from app.modules.feedback import service as feedback_service
 from app.modules.orders import service as orders_service
 from app.modules.orders.schemas import Order
-from app.modules.chat import repository, tools
+from app.modules.chat import repository, tools, voice
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ class AgentReply:
     degraded: bool = False
     # Which tools ran for this turn; shown in the widget while testing.
     tools_used: List[str] = field(default_factory=list)
+    # What a voice note was heard as, so the customer can be shown their own words.
+    transcript: Optional[str] = None
 
 
 SYSTEM_PROMPT = """You are the customer assistant for Wanas Gallery, a premium clothing \
@@ -152,6 +155,14 @@ never present them as the answer.
 another brand's piece, so do not offer a substitute as though it were the same thing.
 - Describe only what is visible. Never state a price, size, colour or stock level that \
 did not come back in the tool result.
+
+WHEN A CUSTOMER SENDS A VOICE NOTE
+- Customers here often speak instead of typing. A message that starts with [voice] was spoken and written down for you by a listening model.
+- Answer it exactly as you would answer something typed. Never mention the recording, the transcription, or the [voice] marker, and never write [voice] yourself.
+- The words were heard, not read, so they can be wrong. Speech gets misheard - most of all numbers, names and street names.
+- Because of that: anything spoken that is going to end up on an order - the piece, the colour, the size, how many, their name, their phone number, their address - must be read back to them before you use it. Read a phone number back digit by digit.
+- If a spoken message does not make sense, or you only caught part of it, say what you did understand and ask them to repeat the rest or type it. Never guess at the missing part, and never fill in a number you are unsure of.
+- If they send a voice note in one message and something else in the next, the voice note is just as much part of the conversation as anything typed. Do not treat it as less certain than it is, and do not keep apologising for it.
 
 TAKING AN ORDER
 - There are two ways to pay: cash to the courier when the parcel arrives, or online by \
@@ -417,8 +428,17 @@ THIS CUSTOMER'S ORDER HAS ARRIVED
 IMAGE_PLACEHOLDER = "[image]"
 
 
-def _stored_text(message: str, images: List[ImagePart]) -> str:
-    """What to write to history for a turn that may have carried images."""
+def _stored_text(message: str, images: List[ImagePart],
+                 spoken: bool = False) -> str:
+    """What to write to history for a turn that may have carried images or speech.
+
+    A spoken message is stored as its transcript, unlike an image, which is stored as a
+    placeholder: the picture was never the message, and the words always are. The marker
+    stays so that whoever reads the conversation back knows it was heard rather than
+    typed - mishearings read very differently once you know one was possible.
+    """
+    if spoken:
+        message = voice.stored_text(message)
     if not images:
         return message
     marker = (IMAGE_PLACEHOLDER if len(images) == 1
@@ -460,6 +480,7 @@ async def _run_tool_calls(
 async def handle_message(
     message: str,
     images: Optional[List[ImagePart]] = None,
+    audio: Optional[List[AudioPart]] = None,
     conversation_id: Optional[str] = None,
     channel: str = "web",
 ) -> AgentReply:
@@ -469,11 +490,34 @@ async def handle_message(
     can surface that while testing.
     """
     images = list(images or [])
+    audio = list(audio or [])
     conversation_id = repository.ensure_conversation(conversation_id, channel=channel)
+
+    # A voice note is turned into words before anything else, because from here on the
+    # turn is an ordinary typed one: the history, the tools and the assistant itself
+    # never learn a microphone was involved.
+    transcript: Optional[str] = None
+    if audio:
+        try:
+            heard = await voice.transcribe(audio)
+        except voice.VoiceUnavailable as exc:
+            # Nothing is stored: the message was never understood, so there is nothing
+            # to record, and a retry should read as a first attempt rather than a second.
+            logger.info("Conversation %s sent a voice note we could not use: %s",
+                        conversation_id, exc)
+            return AgentReply(
+                conversation_id=conversation_id,
+                text=str(exc),
+                model="none",
+                provider="none",
+            )
+        transcript = heard.text
+        message = "\n".join(part for part in (message, transcript) if part)
+
     history = repository.get_recent_messages(conversation_id, settings.chat_history_limit)
 
     repository.add_message(conversation_id, repository.ROLE_USER,
-                           _stored_text(message, images))
+                           _stored_text(message, images, spoken=bool(transcript)))
     if images:
         logger.info("Conversation %s received %d image(s): %s", conversation_id,
                     len(images), ", ".join(image.mime_type for image in images))
@@ -541,6 +585,7 @@ async def handle_message(
             model="none",
             provider="none",
             degraded=True,
+            transcript=transcript,
         )
 
     text = response.text.strip()
@@ -581,4 +626,5 @@ async def handle_message(
         provider=response.provider,
         degraded=response.degraded,
         tools_used=used_tools,
+        transcript=transcript,
     )

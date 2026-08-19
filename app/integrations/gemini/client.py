@@ -17,6 +17,7 @@ from google.genai import types
 
 from app.core.config import settings
 from app.integrations.llm_types import (
+    AudioPart,
     ImagePart,
     LLMRateLimited,
     LLMResponse,
@@ -148,6 +149,8 @@ def _to_content(turn: Turn) -> types.Content:
         parts.append(types.Part.from_text(text=turn.text))
     for image in turn.images:
         parts.append(_image_part(image))
+    for clip in turn.audio:
+        parts.append(_audio_part(clip))
     for call in turn.tool_calls:
         part = types.Part.from_function_call(name=call.name, args=call.arguments)
         if call.signature:
@@ -166,6 +169,16 @@ def _to_content(turn: Turn) -> types.Content:
 
 def _image_part(image: ImagePart) -> types.Part:
     return types.Part.from_bytes(data=image.data, mime_type=image.mime_type)
+
+
+def _audio_part(clip: AudioPart) -> types.Part:
+    """Audio goes over the wire exactly as an image does - inline bytes and a type.
+
+    Measured 2026-08-19: Gemini decides for itself what the bytes are and ignores the
+    label we send, so the type here is documentation rather than instruction. The
+    sniffing in ``chat/attachments.py`` is what actually keeps rubbish out.
+    """
+    return types.Part.from_bytes(data=clip.data, mime_type=clip.mime_type)
 
 
 def _to_llm_response(response: Any, model: str) -> LLMResponse:

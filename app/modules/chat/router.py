@@ -28,14 +28,20 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
 
     message = request.message.strip()
-    if not message and not request.images:
+    if not message and not request.images and not request.audio:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="send a message, an image, or both",
+            detail="send a message, an image, a voice note, or a combination",
+        )
+    if request.audio and not settings.voice_notes_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Voice notes are not switched on. Please type your message.",
         )
 
     try:
         images = attachments.decode_images(request.images)
+        audio = attachments.decode_audio(request.audio)
     except AttachmentError as exc:
         # These messages are written to be shown to a customer, so the widget can
         # display the reason instead of a generic failure.
@@ -47,6 +53,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
     reply = await agent.handle_message(
         message=message,
         images=images,
+        audio=audio,
         conversation_id=request.conversation_id,
         channel=request.channel,
     )
@@ -57,4 +64,5 @@ async def chat(request: ChatRequest) -> ChatResponse:
         provider=reply.provider,
         degraded=reply.degraded,
         tools_used=reply.tools_used,
+        transcript=reply.transcript,
     )

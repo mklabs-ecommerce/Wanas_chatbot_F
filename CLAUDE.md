@@ -143,7 +143,12 @@ JSON client. Text or image alone is a valid turn.
 **The declared content type is never trusted** — bytes are sniffed and the sniffed type
 wins, because browsers mislabel files and iPhones report HEIC as JPEG. HEIC/HEIF must
 stay supported for that reason. Oversized payloads are rejected on encoded length before
-being decoded. `AttachmentError` messages are customer-facing and pass straight through
+being decoded. For audio the sniffing carries more weight still: Gemini works out what
+the bytes are and ignores the label entirely (measured 2026-08-19, one WAV was accepted
+as `audio/wav`, `audio/webm` and `audio/ogg` alike), so this file is the only thing
+standing between a stranger's upload and the model.
+
+`AttachmentError` messages are customer-facing and pass straight through
 the route as the 422 detail.
 
 Image bytes are never persisted: history stores `[image]`/`[N images]`, and a photo rides
@@ -165,6 +170,55 @@ own description of a photo and announced "That is our Ringer Boxy Fit T-shirt".
 `identify_product_from_image` is the one tool that receives dispatch context: images are
 passed to `tools.dispatch(..., images=...)` and only handlers marked `wants_images` get
 them, since a photo cannot travel as a model-supplied argument.
+
+### Voice notes (`app/modules/chat/voice.py`)
+
+Customers here speak more readily than they type. A voice note is **transcribed first**,
+and the transcript is what everything else sees — the assistant answers text, the history
+stores text, a ticket quotes text. That costs one extra model request per spoken turn and
+buys the thing a photo does not need: **the words survive the turn.** A photo can be
+forgotten because the photo is rarely the message; a voice note *is* the message, and
+"the one I told you about" has to still mean something next turn. It also means the
+owner's dashboard shows what was said rather than a row of `[voice note]`.
+
+Transcription runs on its own model (`GEMINI_TRANSCRIPTION_MODEL`) for the reason vision
+does: each model carries its own free-tier budget, so listening does not eat the
+allowance for replying. Stored history is prefixed `[voice]` so a reader knows a message
+was heard rather than typed — mishearings read very differently once you know.
+
+**Silence is caught in code, not by the model** (`attachments.carries_sound`). Measured
+2026-08-19: asked to transcribe one second of digital silence, `gemini-3.7-flash`
+invented a plausible Egyptian sentence **three times out of three**, and the assistant
+then answered a message the customer never sent. The system prompt forbidding exactly
+that did not hold. So the samples are measured before a request is ever spent: peak
+amplitude under 0.8% of full scale over essentially the whole clip is silence, and the
+customer is told the microphone picked nothing up. Only PCM WAV can be measured without
+decoding — anything compressed gets the benefit of the doubt rather than a guess.
+
+That measurement also chose the model. Against a real Egyptian voice note, **every**
+model transcribed the phone number correctly, so accuracy did not decide it —
+confabulation did, and the newer flash models are worse at it, not better:
+
+| model | transcript | invented speech on empty audio |
+|---|---|---|
+| `gemini-2.5-flash` | exact | 0/2 |
+| `gemini-3.1-flash-lite` | exact | 0/2 |
+| `gemini-3.5-flash-lite` | one letter dropped | 0/2 |
+| `gemini-3.5-flash` / `3.6-flash` | exact | 1/2 |
+| `gemini-3.7-flash` | — | 3/3 |
+
+**A transcript is never evidence.** Speech gets misheard, and the thing an Egyptian
+customer is most likely to say aloud is a phone number. The prompt requires anything
+spoken that will reach an order to be read back first, phone numbers digit by digit. The
+`/chat` response also returns `transcript`, and the widget replaces the customer's own
+bubble with it — a mishearing is obvious to the one person who can spot it.
+
+**The widget converts whatever the browser recorded to 16 kHz mono WAV** before sending
+(`app/static/index.html`). Chrome records WebM/Opus and Safari MP4/AAC; converting in the
+page means one format server-side instead of three, and the resample is done by an
+`OfflineAudioContext` rather than by hand, because naive decimation aliases and aliasing
+reads as words the customer never said. `decode_audio` still accepts ogg/mp3/m4a/aac/flac,
+which is what a WhatsApp adapter will hand over.
 
 ### Creating orders (COD)
 

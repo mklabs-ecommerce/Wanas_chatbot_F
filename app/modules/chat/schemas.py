@@ -17,13 +17,27 @@ class ImageUpload(BaseModel):
     mime_type: Optional[str] = Field(default=None, max_length=64)
 
 
+class VoiceUpload(BaseModel):
+    """A voice note attached to a customer turn.
+
+    Same shape as ``ImageUpload`` and for the same reasons: base64 in the JSON body, so
+    every channel hands over bytes the same way, and ``mime_type`` is advisory only.
+    """
+
+    data: str = Field(..., min_length=1)
+    mime_type: Optional[str] = Field(default=None, max_length=64)
+
+
 class ChatRequest(BaseModel):
-    """One customer turn: text, images, or both."""
+    """One customer turn: text, images, a voice note, or a combination."""
 
     # May be blank when an image carries the whole message - a customer often sends a
     # photo with nothing typed. The route rejects a turn that has neither.
     message: str = Field(default="", max_length=4000)
     images: List[ImageUpload] = Field(default_factory=list)
+    # A spoken message. Transcribed before anything else happens, and the transcript is
+    # what the assistant, the history and every tool actually see.
+    audio: List[VoiceUpload] = Field(default_factory=list)
     # Omit on the first turn; the response carries the id to send back next time.
     conversation_id: Optional[str] = Field(default=None, max_length=36)
     # Which front-end this came from. The web widget is the only one today.
@@ -41,3 +55,6 @@ class ChatResponse(BaseModel):
     degraded: bool = False
     # Which tools ran for this turn, so testing shows whether real data was used.
     tools_used: List[str] = Field(default_factory=list)
+    # What a voice note was heard as. Returned so the widget can show the customer their
+    # own words back - a mishearing is obvious to them and to nobody else.
+    transcript: Optional[str] = None

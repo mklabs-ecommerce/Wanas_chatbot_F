@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # conversation", which is usually right - set it only when the chat model is chosen
     # for speed and turns out to be weaker at recognising a garment.
     gemini_vision_model: str = ""
+    # Which model listens to voice notes. Empty means "whatever answers the
+    # conversation", which on a single-model store means a voice turn costs two of that
+    # one model's requests. Pointing this at a different model gives transcription its
+    # own free-tier budget, which is why the vision model is set the same way.
+    gemini_transcription_model: str = ""
     gemini_thinking_level: str = "low"
     gemini_temperature: float = 0.4
 
@@ -124,6 +129,11 @@ class Settings(BaseSettings):
     # already gave rather than issuing a second one - two live links for one basket
     # invite paying twice. There is no time window on that, deliberately: an old link
     # still takes money. What ends the reuse is the price changing.
+
+    # --- Voice notes ------------------------------------------------------
+    # Customers here talk more readily than they type, so a spoken message is a first
+    # class one: it is transcribed and then treated exactly like something typed.
+    voice_notes: bool = True
 
     # --- Database --------------------------------------------------------
     # Unset locally -> SQLite file under ./data. Set to a Postgres URL in production.
@@ -205,6 +215,15 @@ class Settings(BaseSettings):
     def email_configured(self) -> bool:
         """Email notifications need a server, a sender and a recipient to be useful."""
         return bool(self.smtp_host and self.smtp_from and self.store_owner_email)
+
+    @property
+    def voice_notes_enabled(self) -> bool:
+        """Whether the assistant will listen to recordings at all.
+
+        Needs Gemini, which is what does the listening. Off means the widget hides its
+        record button and the endpoint refuses audio.
+        """
+        return self.voice_notes and self.gemini_configured
 
     @property
     def online_payment_configured(self) -> bool:

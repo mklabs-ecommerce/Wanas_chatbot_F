@@ -69,6 +69,9 @@
       display: grid; place-items: center; font-size: 1.15rem; padding: 0;
     }
     .attach:hover { color: var(--ink); border-color: #d9d2c8; }
+    .attach.recording { color: #a4443c; border-color: #e8c4c4; background: #fdf4f3; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+    .attach.recording { animation: pulse 1.1s ease-in-out infinite; }
     .shell.dropping { outline: 2px dashed #b9ae9f; outline-offset: -6px; }
     textarea {
       flex: 1; resize: none; border: 1px solid var(--line); border-radius: 9px;
@@ -102,6 +105,8 @@
       <button type="button" class="attach" id="attach" title="Attach a photo"
               aria-label="Attach a photo">&#128247;</button>
       <input type="file" id="file" accept="image/*,.heic,.heif" multiple hidden>
+      <button type="button" class="attach" id="record" title="Record a voice note"
+              aria-label="Record a voice note">&#127908;</button>
       <textarea id="input" rows="1" placeholder="Write a message… / اكتب رسالتك…"
                 autocomplete="off"></textarea>
       <button type="submit" id="send">Send</button>
@@ -253,6 +258,188 @@
     input.focus();
   });
 
+  // --- voice notes ---------------------------------------------------------
+  //
+  // Whatever the browser records - Chrome gives WebM/Opus, Safari MP4/AAC - is decoded
+  // here and re-encoded as a 16 kHz mono WAV before it is sent. That is one format
+  // instead of three, it is one every model reads, and it means the server never has to
+  // care which browser a customer used. 16 kHz mono is what speech recognition wants
+  // anyway, so the conversion makes the upload smaller rather than larger.
+  const record = document.getElementById("record");
+  const RECORD_LIMIT_MS = 120000;
+  let recorder = null;
+  let chunks = [];
+  let stopTimer = null;
+
+  function canRecord() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia
+              && window.MediaRecorder && (window.AudioContext || window.webkitAudioContext));
+  }
+
+  if (!canRecord()) record.style.display = "none";
+
+  async function startRecording() {
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      bubble("Could not use the microphone — " + err.message, "err");
+      return;
+    }
+    chunks = [];
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((track) => track.stop());
+      record.classList.remove("recording");
+      record.title = "Record a voice note";
+      clearTimeout(stopTimer);
+      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      recorder = null;
+      if (blob.size < 800) { bubble("That recording was too short.", "err"); return; }
+      await sendVoiceNote(blob);
+    };
+    recorder.start();
+    record.classList.add("recording");
+    record.title = "Stop and send";
+    // A voice note is a message, not a broadcast; a forgotten open microphone stops
+    // itself rather than uploading however long the customer left the tab open.
+    stopTimer = setTimeout(() => { if (recorder) recorder.stop(); }, RECORD_LIMIT_MS);
+  }
+
+  record.addEventListener("click", () => {
+    if (recorder) recorder.stop();
+    else startRecording();
+  });
+
+  const WAV_RATE = 16000;
+
+  async function toWav(blob) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    let decoded;
+    try {
+      decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+    } finally {
+      ctx.close();
+    }
+    // Resampled by the browser rather than by hand. Picking every third sample would be
+    // fewer lines and would alias badly - which shows up as a transcript full of words
+    // the customer never said. Rendering to a mono 16 kHz context also does the
+    // downmix, which is what a transcription model wants anyway.
+    const frames = Math.max(1, Math.ceil(decoded.duration * WAV_RATE));
+    const offline = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(
+      1, frames, WAV_RATE);
+    const source = offline.createBufferSource();
+    source.buffer = decoded;
+    source.connect(offline.destination);
+    source.start();
+    const rendered = await offline.startRendering();
+    return encodeWav(rendered.getChannelData(0), WAV_RATE);
+  }
+
+  function encodeWav(samples, rate) {
+    const out = new DataView(new ArrayBuffer(44 + samples.length * 2));
+    const put = (offset, text) => {
+      for (let i = 0; i < text.length; i++) out.setUint8(offset + i, text.charCodeAt(i));
+    };
+    put(0, "RIFF");
+    out.setUint32(4, 36 + samples.length * 2, true);
+    put(8, "WAVEfmt ");
+    out.setUint32(16, 16, true);
+    out.setUint16(20, 1, true);          // PCM
+    out.setUint16(22, 1, true);          // mono
+    out.setUint32(24, rate, true);
+    out.setUint32(28, rate * 2, true);   // bytes per second
+    out.setUint16(32, 2, true);          // block align
+    out.setUint16(34, 16, true);         // bits per sample
+    put(36, "data");
+    out.setUint32(40, samples.length * 2, true);
+    for (let i = 0; i < samples.length; i++) {
+      const sample = Math.max(-1, Math.min(1, samples[i]));
+      out.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    }
+    return new Blob([out.buffer], { type: "audio/wav" });
+  }
+
+  function toBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("could not read the recording"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function sendVoiceNote(blob) {
+    let wav;
+    try {
+      wav = await toWav(blob);
+    } catch (err) {
+      bubble("Could not read that recording — " + err.message, "err");
+      return;
+    }
+    const dataUrl = await toBase64(wav);
+    const spoken = bubble("\u{1F3A4} …", "user");
+    await exchange({ audio: [{ data: dataUrl }] }, spoken);
+  }
+
+  // One request path for typed messages, photos and voice notes alike. ``spoken`` is
+  // the customer's own bubble when they recorded something: it is filled in with the
+  // transcript once the server says what it heard, so a mishearing is visible to the
+  // one person who can spot it immediately.
+  async function exchange(payload, spoken) {
+    send.disabled = true;
+    record.disabled = true;
+    const pending = typing();
+
+    try {
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.assign({
+          message: "",
+          images: [],
+          audio: [],
+          conversation_id: conversationId,
+          channel: "web",
+        }, payload)),
+      });
+      pending.remove();
+
+      if (!res.ok) {
+        let detail = res.status + " " + res.statusText;
+        try { const j = await res.json(); if (j.detail) detail = JSON.stringify(j.detail); } catch {}
+        if (spoken) spoken.remove();
+        bubble("Request failed — " + detail, "err");
+        return;
+      }
+
+      const data = await res.json();
+      conversationId = data.conversation_id;
+      localStorage.setItem(KEY, conversationId);
+      statusEl.textContent = "Conversation " + conversationId.slice(0, 8);
+      if (spoken) {
+        if (data.transcript) {
+          spoken.textContent = "\u{1F3A4} " + data.transcript;
+        } else {
+          // Nothing was heard, so there is no message to show - only the reply saying so.
+          spoken.remove();
+        }
+      }
+      bubble(data.reply, "bot", { model: data.model, provider: data.provider,
+                                  degraded: data.degraded, tools: data.tools_used });
+    } catch (err) {
+      pending.remove();
+      if (spoken) spoken.remove();
+      bubble("Network error — " + err.message, "err");
+    } finally {
+      send.disabled = false;
+      record.disabled = false;
+      input.focus();
+    }
+  }
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const message = input.value.trim();
@@ -265,42 +452,8 @@
     input.style.height = "auto";
     attached = [];
     drawTray();
-    send.disabled = true;
-    const pending = typing();
 
-    try {
-      const res = await fetch("/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message,
-          images: shots.map((dataUrl) => ({ data: dataUrl })),
-          conversation_id: conversationId,
-          channel: "web",
-        }),
-      });
-      pending.remove();
-
-      if (!res.ok) {
-        let detail = res.status + " " + res.statusText;
-        try { const j = await res.json(); if (j.detail) detail = JSON.stringify(j.detail); } catch {}
-        bubble("Request failed — " + detail, "err");
-        return;
-      }
-
-      const data = await res.json();
-      conversationId = data.conversation_id;
-      localStorage.setItem(KEY, conversationId);
-      statusEl.textContent = "Conversation " + conversationId.slice(0, 8);
-      bubble(data.reply, "bot", { model: data.model, provider: data.provider,
-                                  degraded: data.degraded, tools: data.tools_used });
-    } catch (err) {
-      pending.remove();
-      bubble("Network error — " + err.message, "err");
-    } finally {
-      send.disabled = false;
-      input.focus();
-    }
+    await exchange({ message, images: shots.map((dataUrl) => ({ data: dataUrl })) });
   });
 
   input.focus();

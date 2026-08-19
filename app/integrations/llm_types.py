@@ -20,12 +20,21 @@ class ImagePart:
 
 
 @dataclass
+class AudioPart:
+    """A recording attached to a user turn - a voice note (step 12 onwards)."""
+
+    data: bytes
+    mime_type: str
+
+
+@dataclass
 class Turn:
     """One message in a conversation, as handed to a provider."""
 
     role: Role
     text: str = ""
     images: List[ImagePart] = field(default_factory=list)
+    audio: List[AudioPart] = field(default_factory=list)
     # Populated when replaying a previous assistant tool call / its result (step 3+).
     tool_calls: List["ToolCall"] = field(default_factory=list)
     tool_results: List["ToolResult"] = field(default_factory=list)
