@@ -197,6 +197,34 @@ in by the model and proves nothing on its own.
 `ToolContext` carries what the model must not choose (attached images, channel,
 conversation id); only handlers marked `wants_context` receive it.
 
+### Telling a customer their order shipped
+
+Same shape as the feedback trigger, and the same limitation: **the bot cannot start a
+conversation**, so the news rides on the customer's next message. When WhatsApp exists,
+`orders.service.shipping_news()` is the detection half already built and tested — only
+the delivery changes.
+
+`conversation_orders.shipped_told_at` is the "said once" marker. It lives on that table
+rather than in `notifications` because it is a fact about this order in this conversation,
+not about a channel.
+
+What is deliberately excluded from the news:
+
+- **cancelled** orders;
+- orders that have **already reached the customer** — telling someone their parcel is on
+  its way while they are holding it is worse than saying nothing. These are marked told on
+  the way past, so they stop costing a Shopify lookup every turn.
+
+The marker is set in `agent.handle_message()` **after** the reply is persisted, not when
+the prompt is built. A turn that fails tells them next time; announcing into a dropped
+request would lose the news entirely. The trade is that a model which ignores the note
+burns the announcement — the same risk the feedback ask carries.
+
+The prompt allows only what Shopify actually knows: the parcel left the shop. It forbids
+saying where it is now, what stage it is at, or when it will land — timing comes from the
+`delivery_period` rule, as a range and never a date. Tracking is included when Shopify has
+it.
+
 ### How long delivery takes
 
 **Shopify has no field for it.** Verified 2026-08-19 against the live store: one Domestic

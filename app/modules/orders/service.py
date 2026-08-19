@@ -501,6 +501,42 @@ async def create_cod_order(
     return order
 
 
+async def shipping_news(conversation_id: str) -> List[Order]:
+    """Orders from this conversation that have shipped and not been mentioned yet.
+
+    "Shipped" is Shopify's own fulfillment status, which is the store's act of handing
+    the parcel over - not a guess about where it is now.
+
+    An order that has already reached the customer is left out: telling someone their
+    parcel is on its way when they are holding it is worse than saying nothing.
+
+    Never raises. This runs on the way into an ordinary customer turn, so Shopify being
+    slow costs the announcement, not the conversation.
+    """
+    news: List[Order] = []
+    for number in repository.orders_not_yet_told_shipped(conversation_id):
+        try:
+            order = await lookup_for_staff(number)
+        except Exception as exc:  # noqa: BLE001 - never break a chat over this
+            logger.warning("Could not check order %s for shipping news: %s", number, exc)
+            continue
+        if order is None or order.is_cancelled:
+            continue
+        if order.reached_the_customer:
+            # Already arrived - the news is stale. Mark it so it is not re-checked
+            # on every future turn.
+            repository.mark_shipped_told(conversation_id, number)
+            continue
+        if order.fulfillment_status.upper() in ("FULFILLED", "PARTIALLY_FULFILLED"):
+            news.append(order)
+    return news
+
+
+def mark_shipping_announced(conversation_id: str, order_number: str) -> None:
+    """Remember the customer has been told this order is on its way."""
+    repository.mark_shipped_told(conversation_id, order_number)
+
+
 def delivery_period() -> Optional[Dict[str, Any]]:
     """How long delivery takes, or None if nobody has said.
 

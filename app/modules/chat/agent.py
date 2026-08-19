@@ -21,6 +21,7 @@ from app.integrations.llm_types import (
 )
 from app.modules.catalog import service as catalog_service
 from app.modules.feedback import service as feedback_service
+from app.modules.orders import service as orders_service
 from app.modules.orders.schemas import Order
 from app.modules.chat import repository, tools
 
@@ -293,7 +294,8 @@ UNAVAILABLE_REPLY = (
 )
 
 
-def build_system_prompt(arrived_order: Optional[Order] = None) -> str:
+def build_system_prompt(arrived_order: Optional[Order] = None,
+                       shipped_orders: Optional[List[Order]] = None) -> str:
     """Assemble the system prompt for the current build stage.
 
     Part of it depends on the live store rather than the build step: while the storefront
@@ -303,9 +305,39 @@ def build_system_prompt(arrived_order: Optional[Order] = None) -> str:
     prompt = SYSTEM_PROMPT + _TOOL_GUIDANCE + _NOT_YET_BUILT
     if not catalog_service.storefront_is_open():
         prompt += _STOREFRONT_CLOSED
+    if shipped_orders:
+        prompt += _shipped_note(shipped_orders)
     if arrived_order is not None:
         prompt += _arrived_note(arrived_order)
     return prompt
+
+
+def _shipped_note(orders: List[Order]) -> str:
+    """Told to the model when an order has left the shop and the customer does not know.
+
+    News, not a status report: it goes at the top of the reply rather than waiting to be
+    asked, because nobody thinks to ask on the day it happens.
+    """
+    lines = ["", "THIS CUSTOMER'S ORDER HAS SHIPPED"]
+    for order in orders:
+        detail = "- Order " + order.number + " has left the shop and is on its way."
+        tracking = order.tracking
+        if tracking and not tracking.is_empty:
+            parts = [part for part in (tracking.company, tracking.number) if part]
+            if parts:
+                detail += " Tracking: " + " ".join(parts) + "."
+        lines.append(detail)
+    lines += [
+        "- Tell them once, in one short sentence, at the start of your reply - then deal "
+        "with whatever they actually wrote to you about.",
+        "- Say only what is written above. Do not say where the parcel is now, what stage "
+        "it is at, or when it will arrive - shipped means it left the shop, nothing more.",
+        "- If they ask how long it will take from here, answer from the delivery_period "
+        "rule above, as a range and never as a date.",
+        "- Do not repeat this in later messages. They have been told.",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _arrived_note(order: Order) -> str:
@@ -399,7 +431,10 @@ async def handle_message(
     # reused below, so a customer turn costs at most one extra Shopify lookup. Never
     # raises - see feedback.service.review_due().
     arrived_order = await feedback_service.review_due(conversation_id)
-    system_instruction = build_system_prompt(arrived_order)
+    # Has an order this conversation placed left the shop since they last heard? Same
+    # contract: read once per turn, never raises.
+    shipped_orders = await orders_service.shipping_news(conversation_id)
+    system_instruction = build_system_prompt(arrived_order, shipped_orders)
 
     turns = _to_turns(history, message, images)
     declarations = tools.declarations()
@@ -464,6 +499,16 @@ async def handle_message(
         model=response.model,
         provider=response.provider,
     )
+
+    # Marked only now, after a reply actually reached the customer. If the turn had
+    # failed they would be told next time instead of the news being lost - the model
+    # not mentioning it is a smaller risk than announcing it into a dropped request.
+    for order in shipped_orders:
+        try:
+            orders_service.mark_shipping_announced(conversation_id, order.number)
+        except Exception:  # noqa: BLE001 - bookkeeping must not fail a delivered reply
+            logger.exception("Could not record that %s was announced", order.number)
+
     return AgentReply(
         conversation_id=conversation_id,
         text=text,

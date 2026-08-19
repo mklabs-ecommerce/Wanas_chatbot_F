@@ -1,6 +1,6 @@
 # Wanas Gallery Chatbot — What It Does, What's Next
 
-**Status as of 2026-08-19** — 417 automated tests passing, running locally at
+**Status as of 2026-08-19** — 433 automated tests passing, running locally at
 `http://127.0.0.1:8000`, connected to the live Shopify store `p0hd05-m5`.
 
 This document is written for deciding what to build next. It covers what the bot can
@@ -151,7 +151,23 @@ process, so the bot states the terms and files a ticket for you:
 
 It is forbidden to waive a fee, soften the terms, or promise an exchange will be accepted.
 
-### 1.8 Support tickets
+### 1.8 Telling a customer their order shipped
+
+When Shopify marks an order fulfilled, the customer is told once — with the tracking
+number if there is one.
+
+- It says only that the parcel **left the shop**, which is all Shopify knows. Never where
+  it is now, what stage it is at, or when it will land.
+- Cancelled orders are never announced, and neither are orders that have **already
+  arrived** — telling someone their parcel is on its way while they hold it is worse than
+  saying nothing.
+- Said once. It is not repeated on later messages.
+
+**It rides on the customer's next message.** A web chat widget cannot start a
+conversation, so the bot can only tell them when they next write in. The detection half
+is done and tested; when WhatsApp is connected, the same logic sends it directly.
+
+### 1.9 Support tickets
 
 When the bot cannot resolve something, it files a ticket and emails the store owner.
 
@@ -177,7 +193,7 @@ The email carries far more than the ticket itself:
 The same issue in the same conversation within 30 minutes returns the existing ticket
 rather than filing again.
 
-### 1.9 Recording what customers think
+### 1.10 Recording what customers think
 
 Separate from support tickets on purpose: a ticket is a problem awaiting an action,
 feedback is an opinion awaiting nothing. Anything the customer wants fixed, replaced,
@@ -203,7 +219,7 @@ refunded or chased stays a ticket.
   code would invite the customer to expect a reply that is not coming.
 - One conversation is one opinion, so saying thank you twice is recorded once.
 
-### 1.10 Honesty guarantees
+### 1.11 Honesty guarantees
 
 These are the rules that stop the bot inventing things, and each one exists because of a
 real bug that happened:

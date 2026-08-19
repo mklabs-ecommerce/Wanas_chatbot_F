@@ -38,6 +38,11 @@ class ConversationOrder(Base):
     # How many garments were on the order. Stored rather than read back from Shopify so
     # the owner's list view can sort by it without one API call per row.
     item_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Set once the customer has been told this order is on its way, so they are told
+    # once and not on every message afterwards. Lives here rather than in a notifications
+    # table because it is a fact about this order in this conversation.
+    shipped_told_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -99,3 +104,31 @@ def piece_count_for(conversation_id: str) -> int:
             .where(ConversationOrder.conversation_id == conversation_id)
         ).scalars().all()
         return sum(count or 0 for count in counts)
+
+
+def orders_not_yet_told_shipped(conversation_id: str) -> List[str]:
+    """Order numbers from this conversation the customer has not been told about."""
+    if not conversation_id:
+        return []
+    with session_scope() as session:
+        return list(session.execute(
+            select(ConversationOrder.order_number)
+            .where(ConversationOrder.conversation_id == conversation_id)
+            .where(ConversationOrder.shipped_told_at.is_(None))
+            .order_by(ConversationOrder.id.desc())
+        ).scalars().all())
+
+
+def mark_shipped_told(conversation_id: str, order_number: str) -> None:
+    """Remember that this customer has been told this order is on its way."""
+    if not (conversation_id and order_number):
+        return
+    with session_scope() as session:
+        rows = session.execute(
+            select(ConversationOrder)
+            .where(ConversationOrder.conversation_id == conversation_id)
+            .where(ConversationOrder.order_number == order_number)
+            .where(ConversationOrder.shipped_told_at.is_(None))
+        ).scalars().all()
+        for row in rows:
+            row.shipped_told_at = _now()
