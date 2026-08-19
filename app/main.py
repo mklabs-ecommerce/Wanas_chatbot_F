@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.core.config import PROJECT_ROOT, settings
 from app.core.database import init_db
 from app.modules.chat.router import router as chat_router
+from app.modules.dashboard.router import router as dashboard_router
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -83,6 +84,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Module routers are registered here as each module is built.
 app.include_router(chat_router)  # step 2
+app.include_router(dashboard_router)  # owner-facing view
 
 
 @app.get("/health", tags=["system"])
@@ -103,6 +105,7 @@ def health() -> dict:
             "api_version": settings.shopify_api_version,
         },
         "email_configured": settings.email_configured,
+        "dashboard_enabled": settings.dashboard_enabled,
     }
 
 

@@ -1,6 +1,6 @@
 # Wanas Gallery Chatbot — What It Does, What's Next
 
-**Status as of 2026-08-19** — 361 automated tests passing, running locally at
+**Status as of 2026-08-19** — 401 automated tests passing, running locally at
 `http://127.0.0.1:8000`, connected to the live Shopify store `p0hd05-m5`.
 
 This document is written for deciding what to build next. It covers what the bot can
@@ -114,7 +114,32 @@ Guards that make this safe:
 - Egyptian governorate is matched from Arabic or English across all 29, and phone numbers
   are converted to international format, both of which Shopify silently requires.
 
-### 1.7 Support tickets
+### 1.7 Cancelling an order, and exchanges
+
+Straight from `policy.md`.
+
+**Cancelling** — the bot does it itself, in Shopify, and emails you every time.
+
+- Only **before the order ships**. Once it has shipped it says so and explains the
+  exchange route instead.
+- Only if the customer proves the order is theirs — same check as an order lookup.
+- Never on an order with money on it. An unshipped cash-on-delivery order is money that
+  never moved; anything paid is a refund decision for you, not the bot.
+- The pieces are **restocked** automatically, so they go back on sale.
+- Shopify cancels in the background, so if it has not finished the bot says "it is being
+  cancelled" rather than claiming it is done.
+
+**Exchanges are explained, not performed** — your policy makes them a courier-and-human
+process, so the bot states the terms and files a ticket for you:
+
+- return at the door through the courier, paying shipping only;
+- otherwise an exchange within **24 hours**, in original packaging, unworn and clean;
+- faulty or wrong item → the store pays; changed their mind → the customer pays, plus
+  **20 EGP** for the exchange delivery.
+
+It is forbidden to waive a fee, soften the terms, or promise an exchange will be accepted.
+
+### 1.8 Support tickets
 
 When the bot cannot resolve something, it files a ticket and emails the store owner.
 
@@ -140,7 +165,7 @@ The email carries far more than the ticket itself:
 The same issue in the same conversation within 30 minutes returns the existing ticket
 rather than filing again.
 
-### 1.8 Recording what customers think
+### 1.9 Recording what customers think
 
 Separate from support tickets on purpose: a ticket is a problem awaiting an action,
 feedback is an opinion awaiting nothing. Anything the customer wants fixed, replaced,
@@ -166,7 +191,7 @@ refunded or chased stays a ticket.
   code would invite the customer to expect a reply that is not coming.
 - One conversation is one opinion, so saying thank you twice is recorded once.
 
-### 1.9 Honesty guarantees
+### 1.10 Honesty guarantees
 
 These are the rules that stop the bot inventing things, and each one exists because of a
 real bug that happened:
@@ -219,7 +244,7 @@ All in `.env`:
 
 It says these plainly rather than pretending:
 
-- It cannot **change or cancel** an order once placed (it files a ticket instead).
+- It cannot **change what is in** an order once placed — only cancel it, before it ships.
 - It cannot take **card or online payment** yet.
 
 ### 3.3 Excluded by decision

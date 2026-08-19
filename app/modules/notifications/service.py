@@ -93,6 +93,73 @@ async def notify_new_feedback(feedback: Feedback) -> bool:
     return True
 
 
+async def notify_order_cancelled(order: Order, reason: str = "",
+                                 conversation_id: str = "") -> bool:
+    """Tell the store owner that the bot cancelled an order.
+
+    The owner's decision (2026-08-19): the bot cancels unshipped orders itself, and the
+    owner is told every time. This is the only outward action the bot takes that a person
+    might need to undo, so it is never silent.
+
+    Same contract as the others: the cancellation already happened, so every failure path
+    logs and returns False. Nothing raises.
+    """
+    if not settings.email_configured:
+        logger.warning("No SMTP configured - order %s was cancelled but nobody was emailed.",
+                       order.number)
+        return False
+
+    message = EmailMessage()
+    message["Subject"] = "[Cancelled] order " + order.number
+    message["From"] = settings.smtp_from
+    message["To"] = settings.store_owner_email
+
+    lines = [
+        "The assistant cancelled an order at the customer's request.",
+        "",
+        "Order:      " + order.number,
+        "Placed:     " + (order.placed_on or "unknown"),
+        "Status now: " + order.status_words,
+        "Total was:  " + _money(order.total, order.currency),
+    ]
+    if order.phone or order.email:
+        lines.append("Customer:   " + ", ".join(
+            part for part in (order.phone, order.email) if part))
+    if order.ships_to_city or order.ships_to_country:
+        lines.append("Was for:    " + ", ".join(
+            part for part in (order.ships_to_city, order.ships_to_country) if part))
+    lines.append("")
+    lines.append("Reason given: " + (reason.strip() or "none given"))
+    lines.append("")
+    lines.append("The items were restocked.")
+    for item in order.items:
+        detail = item.title
+        if item.variant_title:
+            detail += " (" + item.variant_title + ")"
+        lines.append("  x" + str(item.quantity) + "  " + detail)
+
+    if not order.is_cancelled:
+        # Shopify cancels in a background job. Saying so is more useful than implying
+        # the owner can rely on the admin already showing it.
+        lines += ["", "Note: Shopify had not finished cancelling when this was sent. "
+                      "Check the order in the admin."]
+
+    link = orders_service.admin_url(order)
+    if link:
+        lines += ["", "Open in Shopify: " + link]
+    lines += ["", "Conversation id: " + (conversation_id or "unknown")]
+
+    message.set_content("\n".join(lines))
+    try:
+        await asyncio.to_thread(_send, message)
+    except Exception as exc:  # noqa: BLE001 - a failed email must not break the chat
+        logger.exception("Could not email the cancellation of %s: %s", order.number, exc)
+        return False
+
+    logger.info("Emailed cancellation of %s to %s", order.number, settings.store_owner_email)
+    return True
+
+
 # --- gathering context ----------------------------------------------------
 
 

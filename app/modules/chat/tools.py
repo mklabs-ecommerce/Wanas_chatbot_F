@@ -18,7 +18,13 @@ from app.modules.catalog.service import CatalogUnavailable
 from app.modules.feedback import service as feedback_service
 from app.modules.feedback.service import FeedbackRejected
 from app.modules.orders import service as orders_service
-from app.modules.orders.service import OrderRejected, OrdersUnavailable, RequestedItem
+from app.modules.notifications import service as notifications_service
+from app.modules.orders.service import (
+    CancelRefused,
+    OrderRejected,
+    OrdersUnavailable,
+    RequestedItem,
+)
 from app.modules.support import service as support_service
 from app.modules.support.schemas import CATEGORIES
 from app.modules.support.service import TicketRejected
@@ -525,8 +531,10 @@ async def _create_cod_order(
             governorate=text("governorate"),
             email=text("email"),
             note=text("note"),
-            # From the request, never from the model: this becomes a tag on a real order.
+            # From the request, never from the model: this becomes a tag on a real order,
+            # and the link back to the chat that produced it.
             channel=context.channel,
+            conversation_id=context.conversation_id,
         )
     except OrderRejected as exc:
         logger.warning("COD order refused: %s", exc)
@@ -542,6 +550,92 @@ async def _create_cod_order(
     feedback_service.expect_review(context.conversation_id, order.number)
 
     return {"created": True, "order": order.to_tool_dict()}
+
+
+CANCEL_ORDER = {
+    "name": "cancel_order",
+    "description": (
+        "Cancel an order that has not shipped yet, and put the items back on sale. This "
+        "is real and cannot be undone, so call it only after the customer has asked to "
+        "cancel, you have read the order back to them, and they have confirmed. Both "
+        "arguments are required: the order number, and the email or phone on the order, "
+        "which proves it is theirs. An order that has already shipped cannot be "
+        "cancelled - the result will say so, and an exchange is the route instead."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "order_number": {
+                "type": "string",
+                "description": "The order number, e.g. '#1008' or '1008'.",
+            },
+            "contact": {
+                "type": "string",
+                "description": (
+                    "The email address or phone number on the order, exactly as the "
+                    "customer gave it in this conversation. Never supply one they have "
+                    "not given you."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Why they want to cancel, in their own words, if they said. This "
+                    "goes to the store owner, not back to the customer."
+                ),
+            },
+            "customer_confirmed": {
+                "type": "boolean",
+                "description": (
+                    "True only if you read the order back and the customer confirmed "
+                    "they want it cancelled."
+                ),
+            },
+        },
+        "required": ["order_number", "contact"],
+    },
+}
+
+
+async def _cancel_order(
+    arguments: Dict[str, Any],
+    context: "ToolContext",
+) -> Dict[str, Any]:
+    """Dispatch to ``orders.service.cancel_order``, then tell the store owner."""
+    try:
+        order = await orders_service.cancel_order(
+            order_number=str(arguments.get("order_number") or ""),
+            contact=str(arguments.get("contact") or ""),
+            reason_note=str(arguments.get("reason") or ""),
+        )
+    except CancelRefused as exc:
+        # The order exists but a rule stopped it. The bare code tells the model which
+        # rule, so it can explain the right thing - shipped is not the same as paid.
+        return {"cancelled": False, "error": exc.reason}
+    except OrderRejected:
+        # Same shape as a wrong contact, deliberately: not_found and not-yours must
+        # stay indistinguishable.
+        return {"cancelled": False, "error": "not_found"}
+    except OrdersUnavailable as exc:
+        logger.error("cancel_order failed: %s", exc)
+        return {"cancelled": False, "error": "orders_unavailable"}
+
+    # The owner is told every time - their decision. Best-effort: the order is already
+    # cancelled, and a mail failure must not make the bot claim otherwise.
+    try:
+        await notifications_service.notify_order_cancelled(
+            order, reason=str(arguments.get("reason") or ""),
+            conversation_id=context.conversation_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not email the cancellation of %s", order.number)
+
+    return {
+        "cancelled": True,
+        # Shopify cancels in a background job, so say what is actually true right now
+        # rather than what was asked for.
+        "confirmed": order.is_cancelled,
+        "order": order.to_tool_dict(include_items=False),
+    }
 
 
 CREATE_SUPPORT_TICKET = {
@@ -715,6 +809,11 @@ _REGISTRY: Dict[str, Dict[str, Any]] = {
     CREATE_COD_ORDER["name"]: {
         "declaration": CREATE_COD_ORDER,
         "handler": _create_cod_order,
+        "wants_context": True,
+    },
+    CANCEL_ORDER["name"]: {
+        "declaration": CANCEL_ORDER,
+        "handler": _cancel_order,
         "wants_context": True,
     },
     CREATE_SUPPORT_TICKET["name"]: {

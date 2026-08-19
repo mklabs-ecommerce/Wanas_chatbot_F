@@ -30,3 +30,11 @@ def transcript(
     if not conversation_id:
         return []
     return repository.get_recent_messages(conversation_id, max(1, limit))
+
+
+def conversations(limit: int = 50) -> List[dict]:
+    """Every recent conversation, newest first, for the owner-facing view.
+
+    Summaries only - the messages themselves come from ``transcript()``.
+    """
+    return repository.recent_conversations(max(1, limit))

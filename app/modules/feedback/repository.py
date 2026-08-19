@@ -167,3 +167,16 @@ def count() -> int:
     """Used by tests and diagnostics."""
     with session_scope() as session:
         return len(session.execute(select(CustomerFeedback.id)).all())
+
+
+def all_for_conversation(conversation_id: str) -> List[Feedback]:
+    """Everything this conversation said about the shop, newest first."""
+    if not conversation_id:
+        return []
+    with session_scope() as session:
+        rows = session.execute(
+            select(CustomerFeedback)
+            .where(CustomerFeedback.conversation_id == conversation_id)
+            .order_by(CustomerFeedback.id.desc())
+        ).scalars().all()
+        return [_to_feedback(row) for row in rows]

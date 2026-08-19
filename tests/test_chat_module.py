@@ -118,8 +118,8 @@ async def test_system_prompt_carries_the_language_and_honesty_rules(fake_llm):
     assert "everyday Egyptian Arabic" in prompt
     assert "Never reply in Modern Standard Arabic" in prompt
     assert "Never invent a product" in prompt
-    # Order changes and card payment are still not built, so it must admit those.
-    assert "you cannot change or" in prompt
+    # Cancelling is built now; changing what is IN an order, and card payment, are not.
+    assert "cannot change what is in an order" in prompt
     assert "cannot take card or online payment yet" in prompt
 
 
@@ -233,5 +233,5 @@ async def test_that_warning_disappears_once_the_store_is_published(monkeypatch):
 
     assert "never send them there to order" not in prompt
     # The build-step limitations are unaffected by the storefront being open.
-    assert "you cannot change or" in prompt
+    assert "cannot change what is in an order" in prompt
     assert "cannot take card or online payment yet" in prompt

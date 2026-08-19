@@ -29,7 +29,7 @@ from app.integrations.shopify.client import (
 )
 from app.modules.catalog import service as catalog_service
 from app.modules.catalog.service import CatalogUnavailable
-from app.modules.orders import governorates, shipping
+from app.modules.orders import governorates, repository, shipping
 from app.modules.orders.schemas import LineItem, Order, Tracking
 
 logger = logging.getLogger(__name__)
@@ -410,6 +410,7 @@ async def create_cod_order(
     email: Optional[str] = None,
     note: Optional[str] = None,
     channel: str = "web",
+    conversation_id: str = "",
 ) -> Order:
     """Create a real cash-on-delivery order in Shopify.
 
@@ -487,7 +488,141 @@ async def create_cod_order(
 
     order = _to_order(node)
     logger.info("Created COD order %s (%s %s)", order.number, order.total, order.currency)
+
+    # Which chat produced this order - the one thing about an order Shopify cannot tell
+    # us later. Recorded after Shopify confirmed it, and never allowed to fail the order:
+    # the customer's order exists either way, and a missing link costs a dashboard row.
+    try:
+        repository.link(conversation_id, order.number, channel)
+    except Exception as exc:  # noqa: BLE001 - a bookkeeping failure must not lose an order
+        logger.warning("Could not link order %s to conversation %s: %s",
+                       order.number, conversation_id or "unknown", exc)
     return order
+
+
+def order_numbers_for_conversation(conversation_id: str) -> List[str]:
+    """Just the numbers, without asking Shopify - for counting in a list view."""
+    return repository.order_numbers_for(conversation_id)
+
+
+async def orders_for_conversation(conversation_id: str) -> List[Order]:
+    """Every order placed during this conversation, read live from Shopify.
+
+    For the owner-facing view. Uses the staff lookup deliberately: the reader is the
+    store, and these are orders this app placed itself, so there is no customer contact
+    to verify against.
+
+    Defensive throughout - an order that cannot be read is skipped rather than failing
+    the whole view.
+    """
+    orders: List[Order] = []
+    for number in repository.order_numbers_for(conversation_id):
+        try:
+            order = await lookup_for_staff(number)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read order %s for the dashboard: %s", number, exc)
+            continue
+        if order is not None:
+            orders.append(order)
+    return orders
+
+
+# --- cancelling ------------------------------------------------------------
+#
+# From policy.md: "Order cancellation is allowed before the order is shipped. Once an
+# order has shipped, it can no longer be cancelled - an exchange would apply instead."
+# That sentence is the whole of the rule below, plus two guards the policy takes for
+# granted: the asker has to prove the order is theirs, and money that has changed hands
+# is a refund decision for a person, not for a bot.
+
+
+class CancelRefused(OrderRejected):
+    """The order exists but must not be cancelled. ``reason`` says which rule stopped it."""
+
+    def __init__(self, message: str, reason: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+def cancellable(order: Order) -> Optional[str]:
+    """Why this order cannot be cancelled, or None if it can be.
+
+    Separated from the act of cancelling so the answer can be given before anything is
+    promised to a customer.
+    """
+    if order.is_cancelled:
+        return "already_cancelled"
+    # The policy line, exactly: cancellation ends when the parcel leaves the shop.
+    if order.fulfillment_status.upper() in ("FULFILLED", "PARTIALLY_FULFILLED"):
+        return "already_shipped"
+    # Cash on delivery is unpaid until the courier collects, so an unshipped COD order
+    # is safe. Anything already paid means money moved, and giving it back is a person's
+    # decision - the bot must not cancel its way into owing a refund.
+    if order.financial_status.upper() in ("PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED"):
+        return "already_paid"
+    return None
+
+
+async def cancel_order(
+    order_number: str,
+    contact: Optional[str] = None,
+    reason_note: str = "",
+) -> Order:
+    """Cancel an unshipped order in Shopify and restock it. Real and irreversible.
+
+    ``contact`` proves the order belongs to whoever is asking - the same check
+    ``get_order_status`` makes, and for the same reason: order numbers are guessable.
+
+    Raises ``OrderRejected`` when there is no such order for that contact, and
+    ``CancelRefused`` when the order exists but a rule forbids cancelling it.
+    """
+    order = await get_order_status(order_number, contact)
+    if order is None:
+        # Same answer for "no such order" and "not yours", so this cannot be used to
+        # find out which order numbers are real.
+        raise OrderRejected("No order was found with that number and contact.")
+
+    blocked = cancellable(order)
+    if blocked is not None:
+        raise CancelRefused("This order cannot be cancelled.", blocked)
+
+    note = "Cancelled by the customer through the chatbot."
+    if reason_note.strip():
+        note += " Reason given: " + reason_note.strip()[:300]
+
+    client = _shopify()
+    try:
+        await client.cancel_order(
+            order_id=order.id,
+            reason="CUSTOMER",
+            # Nothing was paid - an unshipped COD order is money that never moved.
+            refund=False,
+            # The pieces go back on sale. Without this the stock stays held for an
+            # order that no longer exists.
+            restock=True,
+            # The store decides what the customer hears, and they are being told in the
+            # chat right now.
+            notify_customer=False,
+            staff_note=note,
+        )
+    except ShopifyRejected as exc:
+        logger.error("Shopify refused to cancel %s: %s", order.number, exc)
+        raise CancelRefused("The order could not be cancelled: " + str(exc),
+                            "shopify_refused") from exc
+    except ShopifyError as exc:
+        logger.error("Cancelling %s failed: %s", order.number, exc)
+        raise OrdersUnavailable(str(exc)) from exc
+
+    logger.info("Cancelled order %s at the customer's request", order.number)
+
+    # Shopify cancels in a background job, so re-read rather than assume. If it has not
+    # landed yet the caller is told what is actually true, not what was requested.
+    try:
+        confirmed = await lookup_for_staff(order.number)
+    except Exception as exc:  # noqa: BLE001 - the cancel was accepted either way
+        logger.warning("Could not re-read %s after cancelling: %s", order.number, exc)
+        return order
+    return confirmed or order
 
 
 def _quantity(value: Any) -> int:

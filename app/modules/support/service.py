@@ -14,7 +14,7 @@ Two things this module owns:
 """
 
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from app.core.config import settings
 from app.modules.notifications import service as notifications
@@ -101,3 +101,12 @@ def _recent_duplicate(conversation_id: str, category: str) -> Optional[Ticket]:
         if ticket.category == category and ticket.status == STATUS_OPEN:
             return ticket
     return None
+
+
+def tickets_for_conversation(conversation_id: str) -> List[Ticket]:
+    """Issues logged from this conversation. For the owner-facing view.
+
+    Unbounded in time, unlike the duplicate check - the owner wants the whole history
+    of a conversation, not just what was logged in the last half hour.
+    """
+    return repository.all_for_conversation(conversation_id)

@@ -140,3 +140,33 @@ def count_messages(conversation_id: str) -> int:
             .where(ChatMessage.conversation_id == conversation_id)
         )
         return int(session.execute(stmt).scalar_one())
+
+
+def recent_conversations(limit: int = 50) -> List[dict]:
+    """Newest conversations first, with a count and the last thing said.
+
+    For the owner-facing view. Returns plain dicts rather than ORM rows so nothing
+    outside this module holds a live session object.
+    """
+    with session_scope() as session:
+        rows = session.execute(
+            select(Conversation).order_by(Conversation.id.desc()).limit(max(1, limit))
+        ).scalars().all()
+
+        out = []
+        for row in rows:
+            messages = session.execute(
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == row.id)
+                .order_by(ChatMessage.id.desc())
+            ).scalars().all()
+            last = messages[0] if messages else None
+            out.append({
+                "conversation_id": row.id,
+                "channel": row.channel,
+                "started_at": row.created_at,
+                "last_at": last.created_at if last else row.created_at,
+                "message_count": len(messages),
+                "last_message": (last.content if last else ""),
+            })
+        return out

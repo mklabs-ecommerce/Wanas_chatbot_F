@@ -123,6 +123,12 @@ class Settings(BaseSettings):
     # changed their mind, and the owner should not read it twice.
     feedback_duplicate_window_seconds: float = 1800.0
 
+    # --- Owner dashboard --------------------------------------------------
+    # The dashboard shows customer names, phones, delivery addresses and whole
+    # transcripts, so it is off unless a token is set - never open by default. Set it to
+    # a long random string; it is compared in constant time.
+    dashboard_token: str = ""
+
     # --- Email notifications --------------------------------------------
     smtp_host: Optional[str] = None
     smtp_port: int = 587
@@ -169,6 +175,15 @@ class Settings(BaseSettings):
     def email_configured(self) -> bool:
         """Email notifications need a server, a sender and a recipient to be useful."""
         return bool(self.smtp_host and self.smtp_from and self.store_owner_email)
+
+    @property
+    def dashboard_enabled(self) -> bool:
+        """Off unless a token is set. A short token is treated as no token.
+
+        Fails closed on purpose: everything behind the dashboard is customer personal
+        data, so the accident of an unset variable must not publish it.
+        """
+        return len(self.dashboard_token.strip()) >= 16
 
     def missing_required(self) -> List[str]:
         """Config the app cannot work at all without."""

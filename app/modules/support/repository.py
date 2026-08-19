@@ -133,3 +133,21 @@ def count() -> int:
     """Used by tests and diagnostics."""
     with session_scope() as session:
         return len(session.execute(select(SupportTicket.id)).all())
+
+
+def all_for_conversation(conversation_id: str) -> List[Ticket]:
+    """Every ticket from this conversation, newest first, however old.
+
+    Separate from ``recent_for_conversation`` on purpose: that one answers "is this a
+    duplicate", which is a question about the last half hour. This one answers "what
+    did this conversation produce", which has no time limit.
+    """
+    if not conversation_id:
+        return []
+    with session_scope() as session:
+        rows = session.execute(
+            select(SupportTicket)
+            .where(SupportTicket.conversation_id == conversation_id)
+            .order_by(SupportTicket.id.desc())
+        ).scalars().all()
+        return [_to_ticket(row) for row in rows]

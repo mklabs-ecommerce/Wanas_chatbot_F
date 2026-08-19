@@ -150,3 +150,8 @@ def _recent_duplicate(conversation_id: str) -> Optional[Feedback]:
             conversation_id, settings.feedback_duplicate_window_seconds):
         return feedback
     return None
+
+
+def feedback_for_conversation(conversation_id: str) -> List[Feedback]:
+    """What this conversation thought of the shop. For the owner-facing view."""
+    return repository.all_for_conversation(conversation_id)

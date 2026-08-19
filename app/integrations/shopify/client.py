@@ -168,6 +168,21 @@ mutation CreateOrder($order: OrderCreateOrderInput!, $options: OrderCreateOption
 }
 """
 
+# Cancelling an order. Shopify runs this as a background job, so the mutation returning
+# cleanly means "accepted", not "already done" - the caller re-reads the order to see the
+# result. `refund` and `restock` are required by the API and are decided by the caller,
+# not defaulted here: this client knows the wire format and nothing about the business.
+ORDER_CANCEL_MUTATION = """
+mutation CancelOrder($orderId: ID!, $reason: OrderCancelReason!, $refund: Boolean!,
+                     $restock: Boolean!, $notifyCustomer: Boolean, $staffNote: String) {
+  orderCancel(orderId: $orderId, reason: $reason, refund: $refund, restock: $restock,
+              notifyCustomer: $notifyCustomer, staffNote: $staffNote) {
+    job { id done }
+    orderCancelUserErrors { field message code }
+  }
+}
+"""
+
 # What the store charges for delivery. Needs the read_shipping scope. Carrier-calculated
 # rates come back as DeliveryParticipant with no price - deciding what to do about that
 # is the orders module's problem, not this one's.
@@ -371,6 +386,44 @@ class ShopifyClient:
         if not created:
             raise ShopifyError("Shopify returned no order and no error")
         return created
+
+    async def cancel_order(
+        self,
+        order_id: str,
+        reason: str = "CUSTOMER",
+        refund: bool = False,
+        restock: bool = True,
+        notify_customer: bool = False,
+        staff_note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Ask Shopify to cancel an order. Returns the job node.
+
+        Not retried, for the same reason ``create_order`` is not: this changes something
+        real, and repeating an ambiguous failure is worse than reporting it.
+        """
+        data = await self.graphql(
+            ORDER_CANCEL_MUTATION,
+            {
+                "orderId": order_id,
+                "reason": reason,
+                "refund": refund,
+                "restock": restock,
+                "notifyCustomer": notify_customer,
+                "staffNote": staff_note,
+            },
+            max_attempts=1,
+        )
+        payload = data.get("orderCancel") or {}
+        errors = payload.get("orderCancelUserErrors") or []
+        if errors:
+            message = "; ".join(
+                (".".join(item.get("field") or []) + ": " if item.get("field") else "")
+                + str(item.get("message", item))
+                for item in errors
+            )
+            raise ShopifyRejected("Shopify refused to cancel the order: " + message[:400],
+                                  errors)
+        return payload.get("job") or {}
 
     async def fetch_delivery_rates(self) -> List[Dict[str, Any]]:
         """Return the raw delivery profiles, or raise ShopifyAuthError without the scope."""

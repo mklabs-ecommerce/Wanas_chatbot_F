@@ -197,6 +197,43 @@ in by the model and proves nothing on its own.
 `ToolContext` carries what the model must not choose (attached images, channel,
 conversation id); only handlers marked `wants_context` receive it.
 
+### Cancelling an order (`orders.service.cancel_order`)
+
+The second irreversible thing the bot does, and the rule is `policy.md` verbatim:
+**cancellation is allowed before the order ships; after that an exchange applies.**
+`cancellable()` is separate from the act so the answer can be given before anything is
+promised, and it returns a bare reason code the prompt maps to words.
+
+Three things stop it, and none should be relaxed:
+
+- **already_shipped** — `FULFILLED` or `PARTIALLY_FULFILLED`. The policy line itself.
+- **already_paid** — `PAID`/`PARTIALLY_PAID`/`PARTIALLY_REFUNDED`. An unshipped COD order
+  is money that never moved; anything else means the bot would be cancelling its way into
+  owing a refund, which is a person's decision.
+- **the contact check** — `cancel_order()` goes through `get_order_status()`, not around
+  it. Cancelling must never become a way past the guard that stops guessable order
+  numbers being enumerated, so "no such order" and "not yours" stay indistinguishable.
+
+`refund=False, restock=True`: nothing was paid, and without the restock the stock stays
+held for an order that no longer exists. `notifyCustomer=False` — they are being told in
+the chat. Like `create_order` it is **not retried**.
+
+**Shopify cancels in a background job**, so the mutation returning cleanly means
+*accepted*, not *done*. The order is re-read afterwards and the tool reports
+`confirmed: order.is_cancelled` — measured live, a cancel is usually still `False` at that
+moment, and the prompt requires "it is being cancelled now" rather than "it is cancelled".
+A second cancel comes back as `shopify_refused` rather than `already_cancelled` for the
+same reason, so the prompt carries a catch-all: any unnamed error means it did not happen.
+
+The owner is emailed every time (`notifications.notify_order_cancelled`) — their decision.
+Best-effort as always: the order is already cancelled, and a mail failure must not make
+the bot claim otherwise.
+
+**Exchanges are not automated and must not be.** `policy.md` makes them a courier-and-human
+process — 24 hours, original packaging, unworn, and who pays depends on why. The prompt
+states the terms and files a `return_or_exchange` ticket; it is forbidden to waive a fee or
+promise an exchange will be accepted.
+
 ### Support tickets (`app/modules/support`, `app/modules/notifications`)
 
 `support` owns the `support_tickets` table; `notifications` owns telling someone. They are
