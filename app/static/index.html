@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wanas Gallery — Chat</title>
+  <style>
+    :root {
+      --bg: #f7f5f2;
+      --panel: #ffffff;
+      --ink: #1c1917;
+      --muted: #7c736b;
+      --line: #e6e1da;
+      --accent: #1c1917;
+      --bot-bg: #f2efea;
+      --warn: #8a5a1a;
+      --warn-bg: #fdf6e7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+      font-family: "Segoe UI", system-ui, -apple-system, "Noto Naskh Arabic", sans-serif;
+      display: flex; align-items: center; justify-content: center; padding: 1.5rem;
+    }
+    .shell {
+      width: 100%; max-width: 620px; background: var(--panel);
+      border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+      display: flex; flex-direction: column; height: min(82vh, 760px);
+      box-shadow: 0 10px 40px rgba(28,25,23,.07);
+    }
+    header {
+      padding: 1rem 1.25rem; border-bottom: 1px solid var(--line);
+      display: flex; align-items: baseline; gap: .6rem;
+    }
+    header h1 { margin: 0; font-size: 1.02rem; font-weight: 600; letter-spacing: .01em; }
+    header .tag { font-size: .74rem; color: var(--muted); }
+    #log { flex: 1; overflow-y: auto; padding: 1.1rem 1.25rem; display: flex;
+           flex-direction: column; gap: .8rem; }
+    .msg { max-width: 82%; padding: .6rem .85rem; border-radius: 11px; font-size: .93rem;
+           line-height: 1.55; white-space: pre-wrap; word-wrap: break-word; }
+    .msg.user { align-self: flex-end; background: var(--accent); color: #faf9f7;
+                border-bottom-right-radius: 4px; }
+    .msg.bot  { align-self: flex-start; background: var(--bot-bg);
+                border-bottom-left-radius: 4px; }
+    .msg.err  { align-self: center; background: var(--warn-bg); color: var(--warn);
+                font-size: .82rem; max-width: 95%; text-align: center; }
+    .meta { font-size: .68rem; color: var(--muted); margin-top: .3rem; letter-spacing: .02em; }
+    .meta.degraded { color: var(--warn); }
+    .typing { align-self: flex-start; color: var(--muted); font-size: .85rem;
+              padding: .4rem .2rem; }
+    .msg img { display: block; max-width: 220px; max-height: 220px; width: auto;
+               border-radius: 8px; margin-bottom: .4rem; }
+    .shots { display: flex; flex-wrap: wrap; gap: .35rem; }
+    form { display: flex; gap: .6rem; padding: .85rem 1rem; border-top: 1px solid var(--line);
+           align-items: flex-end; }
+    #tray { display: none; gap: .5rem; padding: .7rem 1rem 0; flex-wrap: wrap; }
+    #tray.on { display: flex; }
+    .thumb { position: relative; width: 62px; height: 62px; border-radius: 8px;
+             overflow: hidden; border: 1px solid var(--line); background: var(--bot-bg); }
+    .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .thumb button {
+      position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; padding: 0;
+      border-radius: 50%; background: rgba(28,25,23,.78); color: #fff; font-size: .72rem;
+      line-height: 18px; text-align: center; cursor: pointer;
+    }
+    .attach {
+      flex: 0 0 auto; height: 42px; width: 42px; border: 1px solid var(--line);
+      border-radius: 9px; background: #fff; color: var(--muted); cursor: pointer;
+      display: grid; place-items: center; font-size: 1.15rem; padding: 0;
+    }
+    .attach:hover { color: var(--ink); border-color: #d9d2c8; }
+    .shell.dropping { outline: 2px dashed #b9ae9f; outline-offset: -6px; }
+    textarea {
+      flex: 1; resize: none; border: 1px solid var(--line); border-radius: 9px;
+      padding: .6rem .7rem; font: inherit; font-size: .93rem; min-height: 42px;
+      max-height: 130px; background: #fff; color: var(--ink);
+    }
+    textarea:focus { outline: 2px solid #d9d2c8; outline-offset: -1px; }
+    button {
+      border: 0; border-radius: 9px; padding: 0 1.15rem; background: var(--accent);
+      color: #faf9f7; font: inherit; font-weight: 500; cursor: pointer;
+    }
+    button:disabled { opacity: .45; cursor: default; }
+    footer { padding: .5rem 1rem .85rem; font-size: .7rem; color: var(--muted);
+             display: flex; justify-content: space-between; gap: 1rem; }
+    footer button { background: none; color: var(--muted); padding: 0;
+                    text-decoration: underline; font-size: .7rem; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>Wanas Gallery</h1>
+      <span class="tag">assistant &middot; local test widget</span>
+    </header>
+
+    <div id="log" aria-live="polite"></div>
+
+    <div id="tray"></div>
+
+    <form id="composer">
+      <button type="button" class="attach" id="attach" title="Attach a photo"
+              aria-label="Attach a photo">&#128247;</button>
+      <input type="file" id="file" accept="image/*,.heic,.heif" multiple hidden>
+      <textarea id="input" rows="1" placeholder="Write a message… / اكتب رسالتك…"
+                autocomplete="off"></textarea>
+      <button type="submit" id="send">Send</button>
+    </form>
+
+    <footer>
+      <span id="status">Ready</span>
+      <button type="button" id="reset">New conversation</button>
+    </footer>
+  </div>
+
+<script>
+(() => {
+  const log = document.getElementById("log");
+  const form = document.getElementById("composer");
+  const input = document.getElementById("input");
+  const send = document.getElementById("send");
+  const statusEl = document.getElementById("status");
+  const KEY = "wanas.conversation_id";
+
+  // Persisted so a page refresh keeps the same conversation and its history.
+  let conversationId = localStorage.getItem(KEY) || null;
+  if (conversationId) statusEl.textContent = "Conversation " + conversationId.slice(0, 8);
+
+  function bubble(text, kind, meta, shots) {
+    const el = document.createElement("div");
+    el.className = "msg " + kind;
+    if (shots && shots.length) {
+      const strip = document.createElement("div");
+      strip.className = "shots";
+      shots.forEach((src) => {
+        const img = document.createElement("img");
+        img.src = src;
+        strip.appendChild(img);
+      });
+      el.appendChild(strip);
+    }
+    if (text) el.appendChild(document.createTextNode(text));
+    // Replies may be Arabic (RTL) or English (LTR); let the browser decide per message.
+    el.setAttribute("dir", "auto");
+    if (meta) {
+      const m = document.createElement("div");
+      m.className = "meta" + (meta.degraded ? " degraded" : "");
+      let label = meta.degraded
+        ? "via fallback: " + meta.provider + "/" + meta.model
+        : meta.provider + "/" + meta.model;
+      if (meta.tools && meta.tools.length) label += "  ·  " + meta.tools.join(", ");
+      m.textContent = label;
+      el.appendChild(m);
+    }
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  function typing() {
+    const el = document.createElement("div");
+    el.className = "typing";
+    el.textContent = "…";
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  // --- attachments ---------------------------------------------------
+  const MAX_IMAGES = 3;
+  const MAX_BYTES = 8 * 1024 * 1024;   // matches the server's per-image limit
+  const tray = document.getElementById("tray");
+  const fileInput = document.getElementById("file");
+  let attached = [];   // [{ name, dataUrl }]
+
+  function looksLikeImage(file) {
+    // HEIC from an iPhone often arrives with an empty type, so the extension is the
+    // only clue. The server sniffs the bytes regardless.
+    return file.type.startsWith("image/") || /\.(heic|heif)$/i.test(file.name);
+  }
+
+  function drawTray() {
+    tray.innerHTML = "";
+    tray.classList.toggle("on", attached.length > 0);
+    attached.forEach((item, index) => {
+      const cell = document.createElement("div");
+      cell.className = "thumb";
+      const img = document.createElement("img");
+      img.src = item.dataUrl;
+      img.alt = item.name;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.title = "Remove";
+      remove.addEventListener("click", () => { attached.splice(index, 1); drawTray(); });
+      cell.append(img, remove);
+      tray.appendChild(cell);
+    });
+  }
+
+  function addFiles(files) {
+    const chosen = Array.from(files || []);
+    for (const file of chosen) {
+      if (!looksLikeImage(file)) { bubble("Only images can be attached.", "err"); continue; }
+      if (file.size > MAX_BYTES) {
+        bubble(file.name + " is larger than 8 MB.", "err");
+        continue;
+      }
+      if (attached.length >= MAX_IMAGES) {
+        bubble("At most " + MAX_IMAGES + " images per message.", "err");
+        break;
+      }
+      const reader = new FileReader();
+      // Read as a data URL: exactly what the endpoint accepts, so nothing is re-encoded.
+      reader.onload = () => { attached.push({ name: file.name, dataUrl: reader.result }); drawTray(); };
+      reader.onerror = () => bubble("Could not read " + file.name + ".", "err");
+      reader.readAsDataURL(file);
+    }
+  }
+
+  document.getElementById("attach").addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => { addFiles(fileInput.files); fileInput.value = ""; });
+
+  // Paste a screenshot straight into the composer.
+  document.addEventListener("paste", (e) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  });
+
+  // Drag a photo anywhere onto the panel.
+  const shell = document.querySelector(".shell");
+  ["dragenter", "dragover"].forEach((name) =>
+    shell.addEventListener(name, (e) => { e.preventDefault(); shell.classList.add("dropping"); }));
+  ["dragleave", "drop"].forEach((name) =>
+    shell.addEventListener(name, () => shell.classList.remove("dropping")));
+  shell.addEventListener("drop", (e) => { e.preventDefault(); addFiles(e.dataTransfer?.files); });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+  });
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 130) + "px";
+  });
+
+  document.getElementById("reset").addEventListener("click", () => {
+    localStorage.removeItem(KEY);
+    conversationId = null;
+    attached = [];
+    drawTray();
+    log.innerHTML = "";
+    statusEl.textContent = "Ready";
+    input.focus();
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const message = input.value.trim();
+    const shots = attached.map((item) => item.dataUrl);
+    // A photo on its own is a complete message; the endpoint accepts either or both.
+    if (!message && !shots.length) return;
+
+    bubble(message, "user", null, shots);
+    input.value = "";
+    input.style.height = "auto";
+    attached = [];
+    drawTray();
+    send.disabled = true;
+    const pending = typing();
+
+    try {
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message,
+          images: shots.map((dataUrl) => ({ data: dataUrl })),
+          conversation_id: conversationId,
+          channel: "web",
+        }),
+      });
+      pending.remove();
+
+      if (!res.ok) {
+        let detail = res.status + " " + res.statusText;
+        try { const j = await res.json(); if (j.detail) detail = JSON.stringify(j.detail); } catch {}
+        bubble("Request failed — " + detail, "err");
+        return;
+      }
+
+      const data = await res.json();
+      conversationId = data.conversation_id;
+      localStorage.setItem(KEY, conversationId);
+      statusEl.textContent = "Conversation " + conversationId.slice(0, 8);
+      bubble(data.reply, "bot", { model: data.model, provider: data.provider,
+                                  degraded: data.degraded, tools: data.tools_used });
+    } catch (err) {
+      pending.remove();
+      bubble("Network error — " + err.message, "err");
+    } finally {
+      send.disabled = false;
+      input.focus();
+    }
+  });
+
+  input.focus();
+})();
+</script>
+</body>
+</html>
