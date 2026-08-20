@@ -13,8 +13,10 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
+from app.core.config import settings
 from app.modules.admin.analytics.schemas import PLACEHOLDER_CHANNELS, Snapshot, TopProduct, Trend
 from app.modules.chat import service as chat_service
+from app.modules.engagement import service as engagement_service
 from app.modules.feedback import service as feedback_service
 from app.modules.orders import service as orders_service
 from app.modules.orders.schemas import Order
@@ -23,6 +25,11 @@ from app.modules.support import service as support_service
 logger = logging.getLogger(__name__)
 
 TOP_PRODUCTS_LIMIT = 5
+
+# Comments only exist on Instagram - see engagement.service. Computing them for any
+# other channel would either be a Shopify-shaped question with no answer, or (for "all")
+# double-count nothing since no other channel has comments to contribute.
+_CHANNELS_WITH_COMMENTS = (None, "instagram")
 
 
 def _day_start(day: date) -> datetime:
@@ -68,6 +75,12 @@ async def snapshot(channel: Optional[str], start: date, end: date) -> Snapshot:
     feedback = feedback_service.feedback_in_range(start_dt, end_dt, channel)
     conversation_count = chat_service.conversation_count_in_range(start_dt, end_dt, channel)
     message_count = chat_service.customer_message_count_in_range(start_dt, end_dt, channel)
+    timestamps = chat_service.inbound_timestamps_in_range(start_dt, end_dt, channel)
+
+    funnel_comments = funnel_dms_opened = None
+    if channel in _CHANNELS_WITH_COMMENTS:
+        funnel_comments = engagement_service.comments_received_in_range(start_dt, end_dt)
+        funnel_dms_opened = engagement_service.dms_opened_from_comments_in_range(start_dt, end_dt)
 
     # Cancelled orders never happened commercially - counting their revenue would
     # overstate the shop's income for an order nobody paid for.
@@ -80,6 +93,8 @@ async def snapshot(channel: Optional[str], start: date, end: date) -> Snapshot:
 
     cod = [order for order in live if order.payment_method == "cash_on_delivery"]
     online = [order for order in live if order.payment_method == "online"]
+
+    hours, weekdays = _activity_buckets(timestamps)
 
     return Snapshot(
         channel=channel,
@@ -102,6 +117,14 @@ async def snapshot(channel: Optional[str], start: date, end: date) -> Snapshot:
         cod_revenue=sum(_amount(order) for order in cod),
         online_order_count=len(online),
         online_revenue=sum(_amount(order) for order in online),
+        escalation_rate_pct=_pct(len(tickets), conversation_count),
+        funnel_comments=funnel_comments,
+        funnel_dms_opened=funnel_dms_opened,
+        funnel_comment_to_dm_pct=_pct(funnel_dms_opened, funnel_comments),
+        funnel_conversation_to_order_pct=_pct(len(live), conversation_count),
+        busiest_hours=hours,
+        busiest_days=weekdays,
+        utc_offset_hours=settings.store_utc_offset_hours,
     )
 
 
@@ -133,3 +156,32 @@ def _count_by(values) -> Dict[str, int]:
     for value in values:
         counts[value] = counts.get(value, 0) + 1
     return counts
+
+
+def _pct(numerator: Optional[int], denominator: Optional[int]) -> Optional[float]:
+    """``None`` rather than a division by zero, and rather than a rate over nothing -
+    an empty denominator means there is nothing to report, not a 0% rate."""
+    if not numerator and numerator != 0:
+        return None
+    if not denominator:
+        return None
+    return round(numerator / denominator * 100, 1)
+
+
+def _activity_buckets(timestamps: List[datetime]) -> Tuple[List[int], List[int]]:
+    """Customer message timestamps, bucketed by store-local hour and weekday.
+
+    ``timestamps`` come back from SQLite with no tzinfo; they were always stored as
+    UTC (see ``chat/repository.py``), so a naive value is treated as UTC before the
+    store's offset is applied - the same fix the admin session-expiry check needed.
+    """
+    hours = [0] * 24
+    weekdays = [0] * 7
+    offset = timedelta(hours=settings.store_utc_offset_hours)
+    for value in timestamps:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        local = value.astimezone(timezone.utc) + offset
+        hours[local.hour] += 1
+        weekdays[local.weekday()] += 1
+    return hours, weekdays

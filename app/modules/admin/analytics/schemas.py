@@ -85,6 +85,30 @@ class Snapshot:
     online_order_count: int = 0
     online_revenue: float = 0.0
 
+    # -- v1 additional KPIs (owner-dashboard-plan.md Section 6) --------------
+
+    # How often a conversation on this channel produced a support ticket. Read as "how
+    # often a conversation needed a human", not literally "how often the bot failed" -
+    # every ticket category counts, including ones that were never the bot's fault (a
+    # damaged item, a wrong size sent). ``None`` when there were no conversations to
+    # divide by.
+    escalation_rate_pct: Optional[float] = None
+
+    # Comments -> DMs opened -> orders. Comments only exist on Instagram, so the first
+    # two figures are ``None`` for every other channel rather than a misleading 0 - a
+    # web visitor was never going to leave a "comment". Orders reuse ``order_count``.
+    funnel_comments: Optional[int] = None
+    funnel_dms_opened: Optional[int] = None
+    funnel_comment_to_dm_pct: Optional[float] = None
+    funnel_conversation_to_order_pct: Optional[float] = None
+
+    # When customers actually message, in the store's local time (see
+    # ``store_utc_offset_hours``) - for COD dispatch and staffing decisions. Index 0-23
+    # for the hour; index 0=Monday..6=Sunday for the weekday.
+    busiest_hours: List[int] = field(default_factory=lambda: [0] * 24)
+    busiest_days: List[int] = field(default_factory=lambda: [0] * 7)
+    utc_offset_hours: float = 2.0
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "channel": self.channel or "all",
@@ -118,5 +142,23 @@ class Snapshot:
                                     "revenue": round(self.cod_revenue, 2)},
                 "online": {"count": self.online_order_count,
                           "revenue": round(self.online_revenue, 2)},
+            },
+            "escalation": {
+                "rate_pct": self.escalation_rate_pct,
+                "ticket_count": self.ticket_count,
+                "conversation_count": self.conversation_count,
+            },
+            "funnel": {
+                "comments": self.funnel_comments,
+                "dms_opened": self.funnel_dms_opened,
+                "conversations": self.conversation_count,
+                "orders": self.order_count.current,
+                "comment_to_dm_pct": self.funnel_comment_to_dm_pct,
+                "conversation_to_order_pct": self.funnel_conversation_to_order_pct,
+            },
+            "activity": {
+                "by_hour": self.busiest_hours,
+                "by_weekday": self.busiest_days,
+                "utc_offset_hours": self.utc_offset_hours,
             },
         }

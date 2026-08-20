@@ -178,6 +178,26 @@ def message_count_in_range(start: datetime, end: datetime, channel: Optional[str
         return int(session.execute(query).scalar_one())
 
 
+def inbound_timestamps_in_range(start: datetime, end: datetime,
+                                channel: Optional[str] = None) -> List[datetime]:
+    """When each customer message arrived in ``[start, end)``, optionally one channel.
+
+    Customer messages only - for the "busiest hours/days" KPI, which asks when
+    customers actually reach out, not when the (near-instant) bot replies.
+    """
+    with session_scope() as session:
+        query = (
+            select(ChatMessage.created_at)
+            .where(ChatMessage.created_at >= start)
+            .where(ChatMessage.created_at < end)
+            .where(ChatMessage.role == ROLE_USER)
+        )
+        if channel:
+            query = query.join(Conversation, Conversation.id == ChatMessage.conversation_id)
+            query = query.where(Conversation.channel == channel)
+        return list(session.execute(query).scalars().all())
+
+
 def recent_conversations(limit: int = 50) -> List[dict]:
     """Newest conversations first, with a count and the last thing said.
 

@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from sqlalchemy import DateTime, Integer, String, Text, select
+from sqlalchemy import DateTime, Integer, String, Text, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -179,6 +179,36 @@ def recent_events(limit: int = 50, kind: Optional[str] = None) -> List[dict]:
             "outcome": row.outcome,
             "claimed_at": row.claimed_at,
         } for row in rows]
+
+
+def comment_count_in_range(start: datetime, end: datetime) -> int:
+    """How many comments were claimed (received) in ``[start, end)``. For the funnel KPI."""
+    with session_scope() as session:
+        query = (
+            select(func.count())
+            .select_from(InstagramEvent)
+            .where(InstagramEvent.kind == KIND_COMMENT)
+            .where(InstagramEvent.claimed_at >= start)
+            .where(InstagramEvent.claimed_at < end)
+        )
+        return int(session.execute(query).scalar_one())
+
+
+def opened_thread_count_in_range(start: datetime, end: datetime) -> int:
+    """How many DM threads were opened *from a comment* in ``[start, end)``.
+
+    Only threads with ``opened_from_comment`` set - a thread a customer opened by
+    messaging directly, with no comment behind it, is not part of this funnel.
+    """
+    with session_scope() as session:
+        query = (
+            select(func.count())
+            .select_from(InstagramThread)
+            .where(InstagramThread.opened_from_comment.is_not(None))
+            .where(InstagramThread.created_at >= start)
+            .where(InstagramThread.created_at < end)
+        )
+        return int(session.execute(query).scalar_one())
 
 
 # --- posts ----------------------------------------------------------------

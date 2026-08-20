@@ -67,6 +67,12 @@ def customer_message_count_in_range(start: datetime, end: datetime,
     return repository.message_count_in_range(start, end, channel, role=repository.ROLE_USER)
 
 
+def inbound_timestamps_in_range(start: datetime, end: datetime,
+                                channel: Optional[str] = None) -> List[datetime]:
+    """When each customer message arrived in ``[start, end)``. For "busiest hours/days"."""
+    return repository.inbound_timestamps_in_range(start, end, channel)
+
+
 async def handle_message(
     text: str = "",
     raw_attachments: Sequence[Tuple[bytes, Optional[str]]] = (),

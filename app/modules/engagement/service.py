@@ -30,6 +30,7 @@ before it is public.
 import json
 import logging
 import re
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 from app.core.config import settings
@@ -697,3 +698,13 @@ def _dry(what: str) -> str:
 def recent_activity(limit: int = 50) -> List[dict]:
     """What has been handled lately, for the owner-facing view."""
     return repository.recent_events(limit)
+
+
+def comments_received_in_range(start: datetime, end: datetime) -> int:
+    """How many comments arrived in ``[start, end)``. For admin.analytics' funnel KPI."""
+    return repository.comment_count_in_range(start, end)
+
+
+def dms_opened_from_comments_in_range(start: datetime, end: datetime) -> int:
+    """How many DM threads a comment opened in ``[start, end)``. For the same funnel."""
+    return repository.opened_thread_count_in_range(start, end)

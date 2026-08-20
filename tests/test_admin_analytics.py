@@ -17,6 +17,7 @@ from app.modules.admin.analytics import service as analytics_service
 from app.modules.admin.auth import service as auth_service
 from app.modules.admin.auth.schemas import OWNER
 from app.modules.chat import repository as chat_repository
+from app.modules.engagement import repository as engagement_repository
 from app.modules.feedback import service as feedback_service
 from app.modules.notifications import service as notifications
 from app.modules.orders import service as orders_service
@@ -287,3 +288,85 @@ def test_end_before_start_is_rejected(logged_in):
                           params={"start": "2026-08-10", "end": "2026-08-01"},
                           headers=logged_in)
     assert response.status_code == 400
+
+
+# --- v1 additional KPIs: escalation rate, funnel, busiest hours (step 3) ----
+
+
+async def test_escalation_rate_is_tickets_over_conversations(orders):
+    chat_repository.ensure_conversation("conv-e1", channel="web")
+    chat_repository.ensure_conversation("conv-e2", channel="web")
+    chat_repository.ensure_conversation("conv-e3", channel="web")
+    await support_service.create_ticket(
+        category="payment_problem", summary="The payment link says the basket expired.",
+        contact="a@example.com", channel="web", conversation_id="conv-e1")
+
+    today = datetime.now(timezone.utc).date()
+    snapshot = await analytics_service.snapshot("web", today, today + timedelta(days=1))
+    assert snapshot.conversation_count == 3
+    assert snapshot.ticket_count == 1
+    assert snapshot.escalation_rate_pct == pytest.approx(33.3, abs=0.1)
+
+
+async def test_escalation_rate_is_none_with_no_conversations(orders):
+    snapshot = await analytics_service.snapshot(
+        "web", date(2019, 1, 1), date(2019, 1, 2))  # a date with nothing in it
+    assert snapshot.conversation_count == 0
+    assert snapshot.escalation_rate_pct is None
+
+
+async def test_funnel_is_none_for_a_channel_with_no_comments(orders):
+    snapshot = await analytics_service.snapshot("web", *THIS_MONTH)
+    assert snapshot.funnel_comments is None
+    assert snapshot.funnel_dms_opened is None
+    assert snapshot.funnel_comment_to_dm_pct is None
+    # Orders and conversations still show up - only the comment stage is inapplicable.
+    assert snapshot.to_dict()["funnel"]["orders"] == snapshot.order_count.current
+
+
+async def test_funnel_counts_comments_and_dms_opened_from_them(orders):
+    today = datetime.now(timezone.utc)
+    engagement_repository.claim("comment-1", engagement_repository.KIND_COMMENT)
+    engagement_repository.claim("comment-2", engagement_repository.KIND_COMMENT)
+    engagement_repository.claim("comment-3", engagement_repository.KIND_COMMENT)
+    engagement_repository.link_thread("igsid-1", "conv-x", opened_from_comment="comment-1")
+    # A thread with no comment behind it - a customer who messaged directly - must not
+    # count towards a funnel that starts at a comment.
+    engagement_repository.link_thread("igsid-2", "conv-y")
+
+    start = (today - timedelta(hours=1)).date()
+    end = (today + timedelta(days=1)).date()
+    snapshot = await analytics_service.snapshot(None, start, end)  # "All" - includes instagram
+    assert snapshot.funnel_comments == 3
+    assert snapshot.funnel_dms_opened == 1
+    assert snapshot.funnel_comment_to_dm_pct == pytest.approx(33.3, abs=0.1)
+
+
+async def test_busiest_hours_and_days_count_customer_messages_in_store_local_time(monkeypatch, orders):
+    monkeypatch.setattr(analytics_service.settings, "store_utc_offset_hours", 2.0, raising=False)
+    # 22:30 UTC on a Monday -> 00:30 local on Tuesday.
+    chat_repository.ensure_conversation("conv-hours", channel="web")
+    with_time = datetime(2026, 8, 10, 22, 30, tzinfo=timezone.utc)  # a Monday
+    import app.modules.chat.repository as repo
+
+    with_session = repo.session_scope
+    with with_session() as session:
+        session.add(repo.ChatMessage(conversation_id="conv-hours", role="user",
+                                     content="hi", created_at=with_time))
+
+    snapshot = await analytics_service.snapshot(
+        "web", date(2026, 8, 10), date(2026, 8, 12))
+    assert snapshot.busiest_hours[0] == 1  # 00:30 local
+    assert snapshot.busiest_days[1] == 1  # Tuesday, weekday index 1
+    assert sum(snapshot.busiest_hours) == 1
+    assert snapshot.utc_offset_hours == 2.0
+
+
+async def test_busiest_hours_only_counts_customer_messages_not_replies(orders):
+    chat_repository.ensure_conversation("conv-reply", channel="web")
+    chat_repository.add_message("conv-reply", "user", "hi")
+    chat_repository.add_message("conv-reply", "model", "hello")
+
+    today = datetime.now(timezone.utc).date()
+    snapshot = await analytics_service.snapshot("web", today, today + timedelta(days=1))
+    assert sum(snapshot.busiest_hours) == 1

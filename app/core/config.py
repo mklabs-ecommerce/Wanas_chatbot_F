@@ -110,6 +110,11 @@ class Settings(BaseSettings):
     store_country_code: str = "EG"
     store_dial_code: str = "20"
     store_currency: str = "EGP"
+    # Fixed offset for the "busiest hours/days" KPI - Cairo standard time, no DST
+    # adjustment. Egypt has switched DST policy more than once in recent years, so this
+    # is a plain config value rather than a computed one; the owner can change it if the
+    # store's local time drifts from it.
+    store_utc_offset_hours: float = 2.0
     # Delivery is read from the store's own shipping rates (needs the read_shipping
     # scope), so changing a rate in the Shopify admin is enough. These two are only a
     # fallback for when the rate cannot be read at all; None means no delivery line.
