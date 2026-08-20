@@ -57,7 +57,12 @@ POST /chat → modules/chat/router.py → agent.handle_message()
   `notifications` to read a transcript, and is now also how every non-web channel holds
   a turn. `notifications` imports `support.schemas` and
   `feedback.schemas` rather than their services, which is what keeps those two edges from
-  being cycles.
+  being cycles. The owner dashboard adds `admin.analytics → orders + chat + support +
+  feedback + engagement` and `admin.conversations → chat + orders + support + feedback`,
+  both read-only; `chat.service` and `chat.repository` gained channel-filtered and
+  date-ranged variants of what they already exposed (`conversations(limit, channel)`,
+  `conversation_count_in_range()`, `inbound_timestamps_in_range()`, `get_conversation()`)
+  rather than `admin` reaching into `chat`'s tables.
 - A module's `repository.py` is the sole owner of that module's tables. No module queries
   another's tables — it calls that module's service instead.
 - `integrations/` clients are dumb: they know an API's wire format and nothing about the
@@ -569,6 +574,82 @@ silence gate. `attachments.from_bytes()` exists so there is one validation path 
 than two that drift. Meta's *structural* kind (video, share, story) is trusted enough to
 skip the download, because an mp4 sniffs as an audio container and "that recording is too
 short to hear" is a baffling thing to hear back about a video.
+
+### The owner dashboard (`app/modules/admin`, `dashboard/`)
+
+An internal tool, not a customer-facing feature — spec is `owner-dashboard-plan.md`.
+Three sub-modules (`auth`, `analytics`, `conversations`) behind `/admin/api/*`, plus a
+separate React/TypeScript app in `dashboard/` that FastAPI serves at `/admin` once built
+(`npm run build`; `dashboard/README.md` has the day-to-day details). Same-origin by
+design — Section 6 chose "one platform, no cross-origin complexity" over CORS, so the
+built frontend is static files this app mounts, not a second deployed service.
+
+**`admin.auth`** owns two tables (`admin_accounts`, `admin_sessions`) and is the only
+code allowed to touch them. Passwords are `hashlib.scrypt` (stdlib — no new dependency),
+sessions are a random bearer token of which only the SHA-256 is ever stored, and a
+wrong username costs the same wall-clock time as a wrong password (a dummy hash is run
+either way) so login cannot be used to enumerate usernames. `require_owner_account` is
+the one place "owner-only" is enforced, reused by every other admin router rather than
+each one checking the role itself.
+
+**`ADMIN_OWNER_PASSWORD` always wins, on every restart** (owner's call, 2026-08-20).
+`bootstrap_owner()` doesn't just create the account once — it re-syncs the password hash
+to match the environment variable on every startup. That was a deliberate reversal: the
+first version created the account once and then ignored the variable forever, which
+does not match "I control who logs in via variables". There is deliberately no
+dashboard-side change-password screen; changing the password is edit-`.env`-and-restart.
+A same-named `staff` account is left alone rather than silently promoted to owner.
+
+**`admin.analytics`** computes KPIs by calling other modules' `service.py` — never SQL,
+never a Shopify call, of its own. Two v1 KPIs from the plan don't honestly exist and say
+so rather than faking a number: `resolution_tracking_available: false` (nothing in this
+app ever moves a support ticket past `STATUS_OPEN` — there is no resolution workflow
+built) and `rating_available: false` (feedback is deliberately never scored — see
+`modules/feedback`). `orders.service.orders_in_range()` re-verifies Shopify's own
+`tag:`/`created_at:` search locally before trusting it, the same defensive habit
+`get_order_status` uses for contact matching — Shopify's search has been wrong before.
+`Snapshot.daily` (one `{date, orders, revenue}` row per calendar day, zero-filled) feeds
+the revenue chart; it was missing from the first cut and only surfaced once the frontend
+needed a time series rather than a period total.
+
+**Channels the dashboard shows are not the channels the chatbot has.** `web` and
+`instagram` are real; `whatsapp`, `tiktok` and `facebook` come back
+`connected: false` with zero data rather than a real-but-empty snapshot — matching
+`CLAUDE.md`'s own confirmed scope (no WhatsApp integration exists) rather than the
+plan's literal five-tab list. `"all"` (`channel=None` internally) aggregates **every**
+chatbot-tagged order regardless of channel, including a handful of real `whatsapp`-
+tagged orders from before this chatbot existed — so "all" can be larger than
+`web + instagram` combined, honestly, and that gap has no tab of its own to explain it.
+
+**`admin.conversations` is read-only** — no send, no reply, no takeover, and nothing
+should be built in anticipation of one (`app/modules/admin/__init__.py` says so
+explicitly). It cannot import `modules/dashboard` (the older, single-shared-token owner
+view) because that module's own docstring says nothing may depend on it, so its
+`service.py` is a parallel implementation of the same read-composition shape, not a
+reuse. **`"all" shows analytics only, never a merged conversation list`** (owner's call,
+2026-08-20) — the backend's `/admin/api/conversations/all` works and is tested, but
+`dashboard/src/pages/Dashboard.tsx` never calls it; mixing every channel's conversations
+into one list wasn't wanted. Asking for a real conversation under the wrong channel's
+URL is a 404, not a cross-channel leak — `chat.service.get_conversation()` exists
+because `transcript()` alone can't tell "no such conversation" apart from "a real one
+with no messages yet", and both look like an empty list otherwise.
+
+**The frontend has no router library.** The only two screens are the login page and the
+dashboard shell; channel/tab selection is React state, not a URL, so there is no deep
+link and therefore no SPA-fallback route for FastAPI's static mount to need. RTL is
+`dir="rtl"` on `<html>` plus Tailwind's logical-property utilities throughout
+(`ms-*`/`me-*`, `justify-start`/`justify-end`) — a component styled with physical
+`ml-*`/`mr-*` will not flip. Numbers and dates stay LTR inside Arabic text (`.ltr-num`),
+and the revenue chart's axis is deliberately locked `dir="ltr"` on purpose — a time axis
+running newest-to-oldest right-to-left read as more confusing than briefly breaking page
+direction for one component. That one is a judgement call, not a settled fact.
+
+**Nothing about the dashboard's rendering has been verified with a browser.** It was
+built and wired without one available: `npm run build` compiles clean, and both the dev
+proxy and the production static mount were verified end-to-end over HTTP (login,
+`/admin/api/*` calls, asset serving) — but actual layout, the RTL flip, and phone
+behaviour are unverified beyond "the code should do this". `dashboard/README.md` has the
+specific checklist to run before trusting any of it.
 
 ### Prompt and tool-result conventions (`app/modules/chat/agent.py`)
 

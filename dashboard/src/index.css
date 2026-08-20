@@ -1,0 +1,61 @@
+/* Google Fonts: Cairo reads better for Arabic UI text than the system Arabic faces on
+   most platforms. Must precede @import "tailwindcss" - CSS requires every @import to
+   come before any other rule, and Tailwind's own import expands into real rules. */
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Cairo', 'Segoe UI', Tahoma, sans-serif;
+
+  /* A single accent color, deliberately not green - Section 6: green would visually
+     imply "money/success" on every metric regardless of whether that is true here. */
+  --color-accent-50: #eefbfa;
+  --color-accent-100: #d3f4f1;
+  --color-accent-200: #a9e8e3;
+  --color-accent-300: #75d6cf;
+  --color-accent-400: #42bdb5;
+  --color-accent-500: #279e97;
+  --color-accent-600: #1c7f7a;
+  --color-accent-700: #1a6663;
+  --color-accent-800: #195251;
+  --color-accent-900: #194545;
+
+  --color-bg: #f4f6f7;
+  --color-card: #ffffff;
+  --color-ink: #1a2b2c;
+  --color-ink-soft: #5c6f70;
+  --color-line: #e6ebec;
+
+  --color-negative: #d64550;
+  --color-negative-bg: #fbe9ea;
+  --color-positive-bg: #e7f6f0;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numerals and currency codes (EGP) read left-to-right even inside RTL prose - this
+   keeps "3,733 EGP" from having its digit groups reordered by the RTL algorithm. */
+.ltr-num {
+  direction: ltr;
+  unicode-bidi: isolate;
+  display: inline-block;
+}
+
+::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 999px;
+}

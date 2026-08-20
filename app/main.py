@@ -26,6 +26,12 @@ logging.basicConfig(
 logger = logging.getLogger("app")
 
 STATIC_DIR = PROJECT_ROOT / "app" / "static"
+# The React dashboard's production build (owner-dashboard-plan.md Section 7, step 6+).
+# Same-origin on purpose - Section 6 chose "one platform, no cross-origin hosting
+# complexity" over CORS, so this is `npm run build`'s output served by FastAPI itself
+# rather than a second deployed service. `npm run dev` (Vite's own server, with its
+# /admin/api proxy back to this app) is what a developer runs locally instead.
+DASHBOARD_DIST = PROJECT_ROOT / "dashboard" / "dist"
 
 
 @asynccontextmanager
@@ -91,6 +97,18 @@ app.include_router(chat_router)  # step 2
 app.include_router(dashboard_router)  # owner-facing view (single shared token)
 app.include_router(engagement_router)  # Instagram comments and DMs
 app.include_router(admin_router)  # owner dashboard: accounts, analytics, conversations
+
+# Mounted *after* admin_router: Starlette matches routes in registration order, so the
+# explicit /admin/api/* routes above win over this catch-all even though the mount's
+# prefix also covers them. html=True serves dist/index.html for "/admin" and "/admin/"
+# only - the dashboard has no client-side router with its own URLs (channel/tab
+# selection is React state, not the address bar), so there is no deeper path that ever
+# needs a server-side SPA-fallback the way a react-router app would.
+if DASHBOARD_DIST.is_dir():
+    app.mount("/admin", StaticFiles(directory=DASHBOARD_DIST, html=True), name="admin_dashboard")
+else:
+    logger.warning("dashboard/dist not found - run `npm run build` in dashboard/ to serve "
+                   "the owner dashboard from this app; /admin/api/* still works without it")
 
 
 @app.get("/health", tags=["system"])
