@@ -30,6 +30,7 @@ def temp_database(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "SessionLocal", session_factory)
 
     # Import the modules that own tables so create_all sees them.
+    from app.modules.admin.auth import repository as admin_auth_repository  # noqa: F401
     from app.modules.chat import repository  # noqa: F401
     from app.modules.engagement import repository as engagement_repository  # noqa: F401
     from app.modules.support import repository as support_repository  # noqa: F401

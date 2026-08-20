@@ -206,6 +206,18 @@ class Settings(BaseSettings):
     # a long random string; it is compared in constant time.
     dashboard_token: str = ""
 
+    # --- Owner dashboard (admin: accounts, analytics, conversations) ------
+    # A separate, account-based login for the new React dashboard (Section 5 of
+    # owner-dashboard-plan.md) - independent of the single shared-secret /dashboard
+    # view above. How long a login stays valid before the browser must sign in again.
+    admin_session_ttl_hours: float = 168.0
+    # Optional: creates the first owner account from the environment at startup, so
+    # there is a way in before any account exists. Idempotent - only acts if this
+    # username is not already taken, so it is safe to leave set permanently and never
+    # overwrites a password since changed through the dashboard.
+    admin_owner_username: str = ""
+    admin_owner_password: str = ""
+
     # --- Email notifications --------------------------------------------
     smtp_host: Optional[str] = None
     smtp_port: int = 587
