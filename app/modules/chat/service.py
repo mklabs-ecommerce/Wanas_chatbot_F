@@ -43,12 +43,22 @@ def transcript(
     return repository.get_recent_messages(conversation_id, max(1, limit))
 
 
-def conversations(limit: int = 50) -> List[dict]:
+def conversations(limit: int = 50, channel: Optional[str] = None) -> List[dict]:
     """Every recent conversation, newest first, for the owner-facing view.
 
-    Summaries only - the messages themselves come from ``transcript()``.
+    Summaries only - the messages themselves come from ``transcript()``. Optionally one
+    channel, for a per-channel dashboard tab.
     """
-    return repository.recent_conversations(max(1, limit))
+    return repository.recent_conversations(max(1, limit), channel)
+
+
+def get_conversation(conversation_id: str) -> Optional[dict]:
+    """The bare conversation row, or ``None`` if it does not exist.
+
+    For a caller that needs to tell "no such conversation" apart from "a conversation
+    that genuinely has no messages yet" - ``transcript()`` alone cannot.
+    """
+    return repository.get_conversation(conversation_id)
 
 
 def conversation_count_in_range(start: datetime, end: datetime,

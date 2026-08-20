@@ -198,16 +198,17 @@ def inbound_timestamps_in_range(start: datetime, end: datetime,
         return list(session.execute(query).scalars().all())
 
 
-def recent_conversations(limit: int = 50) -> List[dict]:
+def recent_conversations(limit: int = 50, channel: Optional[str] = None) -> List[dict]:
     """Newest conversations first, with a count and the last thing said.
 
     For the owner-facing view. Returns plain dicts rather than ORM rows so nothing
     outside this module holds a live session object.
     """
     with session_scope() as session:
-        rows = session.execute(
-            select(Conversation).order_by(Conversation.id.desc()).limit(max(1, limit))
-        ).scalars().all()
+        query = select(Conversation).order_by(Conversation.id.desc())
+        if channel:
+            query = query.where(Conversation.channel == channel)
+        rows = session.execute(query.limit(max(1, limit))).scalars().all()
 
         out = []
         for row in rows:
@@ -226,3 +227,17 @@ def recent_conversations(limit: int = 50) -> List[dict]:
                 "last_message": (last.content if last else ""),
             })
         return out
+
+
+def get_conversation(conversation_id: str) -> Optional[dict]:
+    """The bare conversation row - id, channel, timestamps - or None if it does not
+    exist. For a caller that needs to tell "no such conversation" apart from "a
+    conversation that genuinely has no messages yet"."""
+    if not conversation_id:
+        return None
+    with session_scope() as session:
+        row = session.get(Conversation, conversation_id)
+        if row is None:
+            return None
+        return {"conversation_id": row.id, "channel": row.channel,
+                "started_at": row.created_at, "last_at": row.updated_at}
