@@ -1,3 +1,4 @@
+import { n } from '../format'
 import type { Snapshot } from '../types'
 
 export default function EscalationFunnel({ snapshot }: { snapshot: Snapshot }) {
@@ -62,7 +63,7 @@ function FunnelStep({
             'ltr-num text-sm font-bold ' + (highlight ? 'text-(--color-accent-700)' : 'text-(--color-ink)')
           }
         >
-          {value.toLocaleString()}
+          {n(value)}
         </span>
       )}
     </div>

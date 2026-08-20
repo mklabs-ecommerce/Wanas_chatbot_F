@@ -5,8 +5,15 @@ export interface DateRange {
   end: string
 }
 
+// NOT date.toISOString().slice(0, 10) - that converts to UTC first, so between
+// midnight and 2am Cairo time (UTC+2) it silently returns *yesterday's* date, and a
+// local-midnight Date for "the 1st of this month" can serialize as the last day of the
+// previous month. Read the local calendar fields directly instead.
 function iso(date: Date): string {
-  return date.toISOString().slice(0, 10)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 // "end" is sent to the backend as an exclusive boundary (see admin.analytics.service),

@@ -15,7 +15,10 @@ function Shell() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar channel={channel} />
         <main className="flex-1 overflow-x-hidden">
-          <Dashboard channel={channel} />
+          {/* key forces a remount on tab switch - without it, state like "which
+              conversation is open" survives the channel change and the detail panel
+              tries to fetch the old conversation id under the new channel. */}
+          <Dashboard key={channel} channel={channel} />
         </main>
       </div>
     </div>

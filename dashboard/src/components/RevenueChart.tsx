@@ -1,4 +1,5 @@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { n } from '../format'
 
 interface Props {
   daily: { date: string; orders: number; revenue: number }[]
@@ -67,7 +68,7 @@ export default function RevenueChart({ daily, currency }: Props) {
                 width={44}
               />
               <Tooltip
-                formatter={(value) => [Number(value).toLocaleString() + ' ' + currency, 'الإيراد']}
+                formatter={(value) => [n(Number(value)) + ' ' + currency, 'الإيراد']}
                 contentStyle={{ direction: 'rtl', borderRadius: 8, borderColor: 'var(--color-line)' }}
               />
               <Bar dataKey="revenue" fill="var(--color-accent-500)" radius={[4, 4, 0, 0]} />

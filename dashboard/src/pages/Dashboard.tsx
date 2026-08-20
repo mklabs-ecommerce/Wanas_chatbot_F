@@ -9,6 +9,7 @@ import EscalationFunnel from '../components/EscalationFunnel'
 import KpiCard from '../components/KpiCard'
 import RevenueChart from '../components/RevenueChart'
 import TopProducts from '../components/TopProducts'
+import { n } from '../format'
 import {
   PLACEHOLDER_CHANNELS,
   type Channel,
@@ -76,18 +77,18 @@ export default function Dashboard({ channel }: { channel: ChannelOrAll }) {
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <KpiCard
               label="الطلبات"
-              value={snapshot.orders.current.toLocaleString()}
+              value={n(snapshot.orders.current)}
               trend={snapshot.orders}
             />
             <KpiCard
               label="الإيراد"
-              value={snapshot.revenue.current.toLocaleString()}
+              value={n(snapshot.revenue.current)}
               suffix={snapshot.currency}
               trend={snapshot.revenue}
             />
             <KpiCard
               label="متوسط قيمة الطلب"
-              value={snapshot.average_order_value.toLocaleString()}
+              value={n(snapshot.average_order_value)}
               suffix={snapshot.currency}
             />
             <KpiCard

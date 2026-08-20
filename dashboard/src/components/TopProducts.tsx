@@ -1,3 +1,4 @@
+import { n } from '../format'
 import type { TopProduct } from '../types'
 
 export default function TopProducts({
@@ -21,7 +22,7 @@ export default function TopProducts({
               <div className="mb-1 flex items-center justify-between text-sm">
                 <span className="font-medium text-(--color-ink)">{product.title}</span>
                 <span className="ltr-num text-(--color-ink-soft)">
-                  {product.quantity} قطعة · {product.revenue.toLocaleString()} {currency}
+                  {product.quantity} قطعة · {n(product.revenue)} {currency}
                 </span>
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-(--color-bg)">
