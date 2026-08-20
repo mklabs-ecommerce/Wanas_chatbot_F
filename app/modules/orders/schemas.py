@@ -11,6 +11,10 @@ Shopify id) must never reach the chat window. Only the fields listed here are ev
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+# The tags every chatbot-placed order carries besides its channel - see cod_order_tags /
+# online_order_tags in core/config.py. Whatever tag is left over identifies the channel.
+_NON_CHANNEL_TAGS = {"chatbot", "cash-on-delivery", "online-payment"}
+
 # Shopify's fulfillment vocabulary in words a customer understands. Left as-is when a
 # status appears that we have not seen, so a new Shopify state degrades to jargon rather
 # than to a wrong reassurance.
@@ -97,10 +101,52 @@ class Order:
     carrier_delivered: bool = False
     items: List[LineItem] = field(default_factory=list)
     tracking: Optional[Tracking] = None
+    # Raw Shopify tags, lower-cased. Carried for the admin dashboard's analytics - never
+    # part of ``to_tool_dict()``, so the model never sees them.
+    tags: List[str] = field(default_factory=list)
+    # Shopify's lifetime order count for this order's customer, as of this order - so
+    # "1" means this order is the only one they have ever placed. None when the order
+    # carries no customer record at all (a guest checkout with no account).
+    customer_number_of_orders: Optional[int] = None
 
     @property
     def is_cancelled(self) -> bool:
         return bool(self.cancelled_at)
+
+    @property
+    def channel(self) -> Optional[str]:
+        """Which chatbot channel placed this order, from its tags.
+
+        An order carries exactly one payment-method tag (``cash-on-delivery`` or
+        ``online-payment``), the ``chatbot`` tag, and the channel itself - so the channel
+        is whichever tag is neither of those. ``None`` for an order with no channel tag
+        at all, which means something other than this chatbot created it (Shopify POS,
+        the admin, another app) - such an order has no place in a per-channel dashboard.
+        """
+        for tag in self.tags:
+            if tag not in _NON_CHANNEL_TAGS:
+                return tag
+        return None
+
+    @property
+    def is_chatbot_order(self) -> bool:
+        return "chatbot" in self.tags
+
+    @property
+    def payment_method(self) -> str:
+        """``cash_on_delivery``, ``online``, or ``other`` for anything not tagged either way."""
+        if self.cash_on_delivery:
+            return "cash_on_delivery"
+        if "online-payment" in self.tags:
+            return "online"
+        return "other"
+
+    @property
+    def is_new_customer(self) -> Optional[bool]:
+        """Whether this was this customer's first order ever, or ``None`` if unknown."""
+        if self.customer_number_of_orders is None:
+            return None
+        return self.customer_number_of_orders <= 1
 
     @property
     def reached_the_customer(self) -> bool:

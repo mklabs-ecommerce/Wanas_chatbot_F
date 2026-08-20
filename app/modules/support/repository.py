@@ -135,6 +135,20 @@ def count() -> int:
         return len(session.execute(select(SupportTicket.id)).all())
 
 
+def in_range(start: datetime, end: datetime, channel: Optional[str] = None) -> List[Ticket]:
+    """Every ticket created in ``[start, end)``, optionally one channel. For analytics."""
+    with session_scope() as session:
+        query = (
+            select(SupportTicket)
+            .where(SupportTicket.created_at >= start)
+            .where(SupportTicket.created_at < end)
+        )
+        if channel:
+            query = query.where(SupportTicket.channel == channel)
+        rows = session.execute(query.order_by(SupportTicket.id.desc())).scalars().all()
+        return [_to_ticket(row) for row in rows]
+
+
 def all_for_conversation(conversation_id: str) -> List[Ticket]:
     """Every ticket from this conversation, newest first, however old.
 

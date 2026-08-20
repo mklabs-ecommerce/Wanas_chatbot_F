@@ -142,6 +142,42 @@ def count_messages(conversation_id: str) -> int:
         return int(session.execute(stmt).scalar_one())
 
 
+def conversation_count_in_range(start: datetime, end: datetime, channel: Optional[str] = None) -> int:
+    """How many conversations started in ``[start, end)``, optionally one channel."""
+    with session_scope() as session:
+        query = (
+            select(func.count())
+            .select_from(Conversation)
+            .where(Conversation.created_at >= start)
+            .where(Conversation.created_at < end)
+        )
+        if channel:
+            query = query.where(Conversation.channel == channel)
+        return int(session.execute(query).scalar_one())
+
+
+def message_count_in_range(start: datetime, end: datetime, channel: Optional[str] = None,
+                           role: Optional[str] = None) -> int:
+    """How many messages were sent in ``[start, end)``, optionally one channel/role.
+
+    Joins to ``conversations`` for the channel filter rather than storing channel on
+    every message - a message never changes channel, so this costs nothing but a join.
+    """
+    with session_scope() as session:
+        query = (
+            select(func.count())
+            .select_from(ChatMessage)
+            .where(ChatMessage.created_at >= start)
+            .where(ChatMessage.created_at < end)
+        )
+        if role:
+            query = query.where(ChatMessage.role == role)
+        if channel:
+            query = query.join(Conversation, Conversation.id == ChatMessage.conversation_id)
+            query = query.where(Conversation.channel == channel)
+        return int(session.execute(query).scalar_one())
+
+
 def recent_conversations(limit: int = 50) -> List[dict]:
     """Newest conversations first, with a count and the last thing said.
 

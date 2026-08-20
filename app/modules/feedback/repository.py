@@ -169,6 +169,20 @@ def count() -> int:
         return len(session.execute(select(CustomerFeedback.id)).all())
 
 
+def in_range(start: datetime, end: datetime, channel: Optional[str] = None) -> List[Feedback]:
+    """Every piece of feedback recorded in ``[start, end)``, optionally one channel."""
+    with session_scope() as session:
+        query = (
+            select(CustomerFeedback)
+            .where(CustomerFeedback.created_at >= start)
+            .where(CustomerFeedback.created_at < end)
+        )
+        if channel:
+            query = query.where(CustomerFeedback.channel == channel)
+        rows = session.execute(query.order_by(CustomerFeedback.id.desc())).scalars().all()
+        return [_to_feedback(row) for row in rows]
+
+
 def all_for_conversation(conversation_id: str) -> List[Feedback]:
     """Everything this conversation said about the shop, newest first."""
     if not conversation_id:

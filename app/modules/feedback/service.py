@@ -18,6 +18,7 @@ mail server must never lose what a customer said.
 """
 
 import logging
+from datetime import datetime
 from typing import List, Optional
 
 from app.core.config import settings
@@ -155,3 +156,8 @@ def _recent_duplicate(conversation_id: str) -> Optional[Feedback]:
 def feedback_for_conversation(conversation_id: str) -> List[Feedback]:
     """What this conversation thought of the shop. For the owner-facing view."""
     return repository.all_for_conversation(conversation_id)
+
+
+def feedback_in_range(start: datetime, end: datetime, channel: Optional[str] = None) -> List[Feedback]:
+    """Every piece of feedback recorded in ``[start, end)``, optionally one channel."""
+    return repository.in_range(start, end, channel)

@@ -15,6 +15,7 @@ assistant answering every channel rather than a second one growing in the adapte
 """
 
 import logging
+from datetime import datetime
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from app.modules.chat import agent, attachments, repository
@@ -48,6 +49,22 @@ def conversations(limit: int = 50) -> List[dict]:
     Summaries only - the messages themselves come from ``transcript()``.
     """
     return repository.recent_conversations(max(1, limit))
+
+
+def conversation_count_in_range(start: datetime, end: datetime,
+                                channel: Optional[str] = None) -> int:
+    """How many conversations started in ``[start, end)``, optionally one channel."""
+    return repository.conversation_count_in_range(start, end, channel)
+
+
+def customer_message_count_in_range(start: datetime, end: datetime,
+                                    channel: Optional[str] = None) -> int:
+    """How many customer messages arrived in ``[start, end)``, optionally one channel.
+
+    Customer messages only (``role="user"``) - a conversation volume KPI should not be
+    inflated by counting the bot's own replies too.
+    """
+    return repository.message_count_in_range(start, end, channel, role=repository.ROLE_USER)
 
 
 async def handle_message(

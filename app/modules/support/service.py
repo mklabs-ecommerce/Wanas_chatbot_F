@@ -14,6 +14,7 @@ Two things this module owns:
 """
 
 import logging
+from datetime import datetime
 from typing import List, Optional
 
 from app.core.config import settings
@@ -110,3 +111,8 @@ def tickets_for_conversation(conversation_id: str) -> List[Ticket]:
     of a conversation, not just what was logged in the last half hour.
     """
     return repository.all_for_conversation(conversation_id)
+
+
+def tickets_in_range(start: datetime, end: datetime, channel: Optional[str] = None) -> List[Ticket]:
+    """Every ticket created in ``[start, end)``, optionally one channel. For admin.analytics."""
+    return repository.in_range(start, end, channel)

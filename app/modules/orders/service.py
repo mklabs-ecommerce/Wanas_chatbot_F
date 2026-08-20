@@ -230,6 +230,65 @@ async def delivery_cost(
     return {"title": rate.title, "amount": _trim(rate.amount), "currency": rate.currency}
 
 
+# --- analytics (modules/admin/analytics) -----------------------------------
+
+# Analytics wants every order the chatbot has ever placed to be findable by channel and
+# date - unlike every other reader here, which wants a handful of one customer's orders
+# and is happy with the first page. Capped well past what one store's monthly volume
+# could plausibly be; see ShopifyClient.fetch_all_orders for the hard stop.
+_ANALYTICS_PAGE_SIZE = 100
+_ANALYTICS_MAX_PAGES = 50
+
+
+async def orders_in_range(
+    start: datetime,
+    end: datetime,
+    channel: Optional[str] = None,
+) -> List[Order]:
+    """Every chatbot-placed order created in ``[start, end)``, optionally one channel.
+
+    Only orders tagged ``chatbot`` are returned - an order Shopify POS or the admin
+    created has no channel and no place on this dashboard. ``start``/``end`` are
+    compared as dates in Shopify's own search syntax, so callers should pass UTC.
+
+    The query does the filtering Shopify-side, but is re-checked locally before
+    anything is handed back - the same reason ``get_order_status`` never trusts a
+    Shopify search result on its own (its ``name:`` filter matches "#100" against
+    "#1003"; there is no reason to assume ``tag:`` and ``created_at:`` are stricter).
+    """
+    query = "tag:'chatbot' AND created_at:>='%s' AND created_at:<'%s'" % (
+        start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+    )
+    if channel:
+        safe = _SAFE_QUERY_CHARS.sub("", channel)
+        if safe:
+            query += " AND tag:'%s'" % safe
+
+    try:
+        nodes = await _shopify().fetch_all_orders(
+            query=query, page_size=_ANALYTICS_PAGE_SIZE, max_pages=_ANALYTICS_MAX_PAGES
+        )
+    except ShopifyError as exc:
+        logger.error("Analytics order fetch failed (%s): %s", query, exc)
+        raise OrdersUnavailable(str(exc)) from exc
+
+    orders = [_to_order(node) for node in nodes]
+    return [
+        order for order in orders
+        if order.is_chatbot_order
+        and (channel is None or order.channel == channel)
+        and _placed_within(order.placed_on, start, end)
+    ]
+
+
+def _placed_within(placed_on: str, start: datetime, end: datetime) -> bool:
+    try:
+        day = datetime.strptime(placed_on, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return False
+    return start.date() <= day < end.date()
+
+
 # --- authorisation --------------------------------------------------------
 
 
@@ -327,6 +386,8 @@ def _to_order(node: Dict[str, Any]) -> Order:
         cash_on_delivery=any(tag in _COD_TAGS for tag in tags),
         estimated_delivery=estimated,
         carrier_delivered=_carrier_delivered(fulfillments),
+        tags=tags,
+        customer_number_of_orders=_to_int(customer.get("numberOfOrders")),
         items=[
             LineItem(
                 title=str(item.get("title") or ""),
@@ -369,6 +430,14 @@ def _shipment(fulfillments: Sequence[Dict[str, Any]]):
         if fulfillment.get("estimatedDeliveryAt"):
             return None, _date(fulfillment.get("estimatedDeliveryAt"))
     return None, None
+
+
+def _to_int(value: Any) -> Optional[int]:
+    """Shopify's ``numberOfOrders`` arrives as a string; a missing/odd value is unknown."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _money(price_set: Optional[Dict[str, Any]]):

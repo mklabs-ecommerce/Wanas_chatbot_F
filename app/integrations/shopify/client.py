@@ -120,7 +120,7 @@ ORDER_FIELDS = """
       subtotalPriceSet { shopMoney { amount currencyCode } }
       totalShippingPriceSet { shopMoney { amount currencyCode } }
       shippingLine { title }
-      customer { email phone }
+      customer { email phone numberOfOrders }
       shippingAddress { name phone city province country }
       lineItems(first: 25) {
         nodes { title quantity variantTitle sku }
@@ -139,6 +139,18 @@ ORDERS_QUERY = """
 query Orders($first: Int!, $query: String) {
   orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
     nodes {""" + ORDER_FIELDS + """}
+  }
+}
+"""
+
+# The paginated form analytics needs to walk every order in a date range rather than
+# just the first page - see fetch_all_orders(). Shares ORDER_FIELDS so one mapper in
+# modules/orders/service.py reads either query's result.
+ORDERS_PAGE_QUERY = """
+query OrdersPage($first: Int!, $after: String, $query: String) {
+  orders(first: $first, after: $after, query: $query, sortKey: CREATED_AT, reverse: true) {
+    nodes {""" + ORDER_FIELDS + """}
+    pageInfo { hasNextPage endCursor }
   }
 }
 """
@@ -427,6 +439,47 @@ class ShopifyClient:
 
         data = await self.graphql(ORDERS_QUERY, variables)
         return (data.get("orders") or {}).get("nodes") or []
+
+    async def fetch_orders_page(
+        self,
+        query: Optional[str] = None,
+        first: int = 50,
+        after: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """Return one page of raw order nodes plus the next cursor. See ``fetch_all_orders``."""
+        variables: Dict[str, Any] = {"first": max(1, min(first, 250)), "after": after}
+        if query:
+            variables["query"] = query
+
+        data = await self.graphql(ORDERS_PAGE_QUERY, variables)
+        orders = data.get("orders") or {}
+        page = orders.get("pageInfo") or {}
+        cursor = page.get("endCursor") if page.get("hasNextPage") else None
+        return orders.get("nodes") or [], cursor
+
+    async def fetch_all_orders(
+        self,
+        query: Optional[str] = None,
+        page_size: int = 100,
+        max_pages: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Walk every order matching ``query`` - for analytics, which needs the whole
+        range rather than a handful of recent results.
+
+        ``max_pages`` is a guard so a pagination bug (or a date range far wider than
+        intended) can never loop forever; at ``page_size=100`` the default caps a single
+        analytics query at 5,000 orders.
+        """
+        nodes: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        for _ in range(max_pages):
+            page, cursor = await self.fetch_orders_page(query=query, first=page_size, after=cursor)
+            nodes.extend(page)
+            if not cursor:
+                break
+        else:
+            logger.warning("Stopped paginating orders after %d pages (query=%r)", max_pages, query)
+        return nodes
 
     async def fetch_order(self, order_id: str) -> Optional[Dict[str, Any]]:
         """One order by its Shopify id, or None if it is gone.
