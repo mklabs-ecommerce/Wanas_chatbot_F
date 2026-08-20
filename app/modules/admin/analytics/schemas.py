@@ -68,6 +68,11 @@ class Snapshot:
 
     top_products: List[TopProduct] = field(default_factory=list)
 
+    # One row per calendar day in the period, even a day with no orders - for the
+    # revenue-over-time bar chart (Section 3). A day missing from the list would read
+    # as "no data" rather than "genuinely zero", which is a different fact.
+    daily: List[Dict[str, Any]] = field(default_factory=list)
+
     new_customers: int = 0
     returning_customers: int = 0
 
@@ -120,6 +125,7 @@ class Snapshot:
             "average_order_value": round(self.average_order_value, 2),
             "currency": self.currency,
             "top_products": [product.to_dict() for product in self.top_products],
+            "daily": self.daily,
             "customers": {"new": self.new_customers, "returning": self.returning_customers},
             "conversations": {"count": self.conversation_count, "messages": self.message_count},
             "support_tickets": {

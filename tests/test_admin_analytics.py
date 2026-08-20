@@ -132,6 +132,15 @@ async def test_average_order_value(orders):
     assert snapshot.average_order_value == 400.0  # (500 + 300) / 2
 
 
+async def test_daily_series_has_one_row_per_day_including_zero_days(orders):
+    snapshot = await analytics_service.snapshot("web", date(2026, 8, 9), date(2026, 8, 12))
+    by_date = {row["date"]: row for row in snapshot.daily}
+    assert set(by_date) == {"2026-08-09", "2026-08-10", "2026-08-11"}
+    assert by_date["2026-08-10"]["orders"] == 2  # 2001 and 2002, both dated 2026-08-10
+    assert by_date["2026-08-10"]["revenue"] == 800.0
+    assert by_date["2026-08-09"] == {"date": "2026-08-09", "orders": 0, "revenue": 0.0}
+
+
 async def test_top_products_ranked_by_quantity(orders):
     snapshot = await analytics_service.snapshot("web", *THIS_MONTH)
     titles = [p.title for p in snapshot.top_products]

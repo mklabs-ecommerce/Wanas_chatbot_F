@@ -105,6 +105,7 @@ async def snapshot(channel: Optional[str], start: date, end: date) -> Snapshot:
         average_order_value=(revenue / len(live)) if live else 0.0,
         currency=currency,
         top_products=_top_products(live),
+        daily=_daily_series(live, start, end),
         new_customers=sum(1 for order in live if order.is_new_customer is True),
         returning_customers=sum(1 for order in live if order.is_new_customer is False),
         conversation_count=conversation_count,
@@ -149,6 +150,30 @@ def _top_products(orders: List[Order], limit: int = TOP_PRODUCTS_LIMIT) -> List[
             row.quantity += item.quantity
             row.revenue += per_piece * item.quantity
     return sorted(by_title.values(), key=lambda product: product.quantity, reverse=True)[:limit]
+
+
+def _daily_series(orders: List[Order], start: date, end: date) -> List[Dict[str, object]]:
+    """One row per calendar day in ``[start, end)``, even a day with no orders.
+
+    A bar chart needs every day present, or a quiet day silently vanishes from the
+    x-axis instead of showing as zero - a different fact from "no data for that day".
+    Capped: a date range spanning years would build a day per iteration, so this is
+    only sound for the ranges the dashboard actually offers (day/week/month/year).
+    """
+    buckets: Dict[str, Dict[str, float]] = {}
+    day = start
+    while day < end:
+        buckets[day.isoformat()] = {"orders": 0, "revenue": 0.0}
+        day += timedelta(days=1)
+
+    for order in orders:
+        bucket = buckets.get(order.placed_on)
+        if bucket is not None:
+            bucket["orders"] += 1
+            bucket["revenue"] += _amount(order)
+
+    return [{"date": day, "orders": int(values["orders"]), "revenue": round(values["revenue"], 2)}
+            for day, values in buckets.items()]
 
 
 def _count_by(values) -> Dict[str, int]:
