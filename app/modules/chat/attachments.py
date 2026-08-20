@@ -21,6 +21,7 @@ import binascii
 import logging
 import re
 import struct
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from app.integrations.llm_types import AudioPart, ImagePart
@@ -54,6 +55,26 @@ _DATA_URL = re.compile(r"^data:(?P<mime>[\w.+-]+/[\w.+-]+)?(?:;charset=[\w-]+)?;
 # ISO base-media brands that mean "this is a HEIC/HEIF still image".
 _HEIF_BRANDS = (b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs",
                 b"mif1", b"msf1", b"heif")
+
+
+@dataclass
+class RawUpload:
+    """An attachment that arrived as bytes rather than as base64 in a JSON body.
+
+    Instagram hands over a URL, so a DM photo or voice note is downloaded and turns up
+    here as bytes. Re-encoding it to base64 costs a millisecond and buys the thing worth
+    having: one validation path. The size limits, the type sniffing and the silence gate
+    are the same ones the widget's uploads go through, rather than a second
+    implementation that drifts.
+    """
+
+    data: str
+    mime_type: Optional[str] = None
+
+
+def from_bytes(data: bytes, mime_type: Optional[str] = None) -> RawUpload:
+    """Wrap raw bytes so they can be validated like any other upload."""
+    return RawUpload(data=base64.b64encode(data).decode("ascii"), mime_type=mime_type)
 
 
 class AttachmentError(ValueError):

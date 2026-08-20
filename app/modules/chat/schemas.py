@@ -1,5 +1,6 @@
-"""Request/response shapes for the chat endpoint."""
+"""Request/response shapes for the chat endpoint, and for the module's public door."""
 
+from dataclasses import dataclass, field as dataclass_field
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -57,4 +58,23 @@ class ChatResponse(BaseModel):
     tools_used: List[str] = Field(default_factory=list)
     # What a voice note was heard as. Returned so the widget can show the customer their
     # own words back - a mishearing is obvious to them and to nobody else.
+    transcript: Optional[str] = None
+
+
+@dataclass
+class Answer:
+    """What ``chat.service.handle_message()`` gives back to another module.
+
+    Deliberately not the agent's own reply object: ``agent.py`` is internal, and a
+    caller holding its type would be reaching past this module's door. This carries only
+    what a channel adapter needs to send a message and log what happened.
+    """
+
+    conversation_id: str
+    text: str
+    model: str = ""
+    provider: str = ""
+    degraded: bool = False
+    tools_used: List[str] = dataclass_field(default_factory=list)
+    # What a voice note was heard as, when one was sent.
     transcript: Optional[str] = None

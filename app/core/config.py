@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # one model's requests. Pointing this at a different model gives transcription its
     # own free-tier budget, which is why the vision model is set the same way.
     gemini_transcription_model: str = ""
+    # Which model decides what a public comment is. Its own budget again, and for a
+    # sharper reason than the others: classifying must not be able to starve replying,
+    # because a comment arrives whether or not a customer is mid-conversation.
+    gemini_classifier_model: str = ""
     gemini_thinking_level: str = "low"
     gemini_temperature: float = 0.4
 
@@ -134,6 +138,39 @@ class Settings(BaseSettings):
     # Customers here talk more readily than they type, so a spoken message is a first
     # class one: it is transcribed and then treated exactly like something typed.
     voice_notes: bool = True
+
+    # --- Instagram --------------------------------------------------------
+    # Comments on posts and reels, and the DM conversation a comment can open. Meta
+    # calls the DM half "Private Replies to Comments" - it is a sanctioned API, not a
+    # workaround, but it only exists for Business/Creator accounts on a reviewed app.
+    #
+    # All three of token, account id and app secret are needed before anything runs:
+    # the token to act, the account id to recognise our own comments and echoes (without
+    # it the bot answers itself), and the secret to prove an event really came from Meta.
+    instagram_access_token: str = ""
+    instagram_business_account_id: str = ""
+    instagram_app_secret: str = ""
+    # Echoed back during Meta's webhook subscription handshake. Any long random string.
+    instagram_webhook_verify_token: str = ""
+    instagram_graph_version: str = "v25.0"
+    instagram_timeout_seconds: float = 20.0
+
+    # The master switch. Off means the webhook still verifies and still returns 200 -
+    # Meta disables a subscription that errors - but nothing is classified or sent.
+    instagram_engagement_enabled: bool = True
+    # Classify, decide, log - and send nothing at all. On by default, deliberately: the
+    # first run against real comments must be readable before it is public. Turning this
+    # off is a decision someone makes after reading that log.
+    instagram_dry_run: bool = True
+    # Whether the public "we have sent you a DM" reply is posted. The private reply and
+    # the like are unaffected.
+    instagram_public_replies: bool = True
+    # Self-throttle. Meta publishes far higher ceilings (750 private replies/hour), but
+    # a burst of automated public activity reads as spam whatever the limit says, and a
+    # runaway loop is cheaper to notice at 200/hour than at 750.
+    instagram_max_actions_per_hour: int = 200
+    # Instagram truncates a DM past this, so a long reply is split rather than cut.
+    instagram_message_char_limit: int = 1000
 
     # --- Database --------------------------------------------------------
     # Unset locally -> SQLite file under ./data. Set to a Postgres URL in production.
@@ -233,6 +270,29 @@ class Settings(BaseSettings):
         cash on delivery only, and the tool is not even declared to the model.
         """
         return self.online_payment_enabled and self.shopify_configured
+
+    @property
+    def instagram_configured(self) -> bool:
+        """Whether Instagram can be talked to at all.
+
+        Fails closed like ``dashboard_enabled``: a half-configured integration would
+        act in public with no way to check an event was genuine, so all three of the
+        token, our own account id and the app secret are required together.
+        """
+        return bool(self.instagram_access_token
+                    and self.instagram_business_account_id
+                    and self.instagram_app_secret)
+
+    @property
+    def instagram_enabled(self) -> bool:
+        """Whether comments and DMs are actually acted on.
+
+        Needs Gemini too - the DM half is the ordinary assistant, and the comment half
+        cannot decide what a comment is without a model.
+        """
+        return (self.instagram_engagement_enabled
+                and self.instagram_configured
+                and self.gemini_configured)
 
     @property
     def delivery_period_known(self) -> bool:

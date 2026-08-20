@@ -31,6 +31,7 @@ def temp_database(tmp_path, monkeypatch):
 
     # Import the modules that own tables so create_all sees them.
     from app.modules.chat import repository  # noqa: F401
+    from app.modules.engagement import repository as engagement_repository  # noqa: F401
     from app.modules.support import repository as support_repository  # noqa: F401
 
     database.Base.metadata.create_all(bind=engine)

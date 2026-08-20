@@ -49,9 +49,13 @@ POST /chat → modules/chat/router.py → agent.handle_message()
   are `chat/tools.py → catalog/orders/support/feedback`, `chat/agent.py → catalog +
   feedback`, `orders → catalog`, `support → notifications`, `feedback → notifications +
   orders`, and
-  `notifications → orders + chat` (to enrich the ticket email). Keep the list short and
-  always through `service.py` — `chat/service.py` exists only because `notifications`
-  needed a legal way to read a transcript. `notifications` imports `support.schemas` and
+  `notifications → orders + chat` (to enrich the ticket email). Instagram adds
+  `engagement → chat + catalog + support`, all through `service.py`;
+  `chat/service.py` grew `handle_message()` so a channel adapter never touches
+  `agent.py`. Keep the list short and
+  always through `service.py` — `chat/service.py` began as the legal way for
+  `notifications` to read a transcript, and is now also how every non-web channel holds
+  a turn. `notifications` imports `support.schemas` and
   `feedback.schemas` rather than their services, which is what keeps those two edges from
   being cycles.
 - A module's `repository.py` is the sole owner of that module's tables. No module queries
@@ -474,6 +478,98 @@ This adds `feedback → orders` and `chat/agent.py → feedback` to the edge lis
 uses `lookup_for_staff()` for the same reason `notifications` does — the conversation
 created the order, so it is entitled to it, and there is no customer contact to check.
 
+### Instagram: comments and DMs (`app/modules/engagement`)
+
+The first channel other than the widget. A comment on a post is triaged; an important one
+opens a DM, and from there it is an ordinary conversation - the catalog, COD orders,
+payment links, photo matching and voice notes all work with no channel-specific code,
+because a DM goes through `chat.service.handle_message()`, the same door the widget's
+route reaches through `agent.py`. **Nothing here re-implements the assistant.** An
+adapter that grew its own answers would be a second bot with a second set of honesty
+rules.
+
+Four rules, each of which is the reason some part of this is shaped the way it is:
+
+- **Nothing a model writes is ever posted in public.** The public reply and the DM opener
+  are fixed templates, in Arabic or English chosen from the comment's own script. A
+  comment reply is permanent and read by everyone; the failure mode of a model going
+  slightly off-script there is far worse than in a private chat. It also costs no quota.
+  The bot cannot open a conversation anyway - `handle_message()` answers a customer turn.
+- **Silence is the safe failure.** A classifier that cannot be reached, a catalog that is
+  down, an unreadable answer - all of them mean *nothing is posted, liked or sent*. An
+  unanswered comment is where the shop was before any of this existed.
+- **Nothing outward happens twice.** `repository.claim()` writes the event id before the
+  work starts, because Meta redelivers anything it did not get a fast 200 for. That
+  matters most for the private reply: Meta allows **one per comment for all time**
+  (subcode 2534014), so a retry does not resend it, it spends it.
+- **The dry run is real.** `INSTAGRAM_DRY_RUN` (**on by default**) runs every path,
+  decides everything, and logs instead of calling. It is how a live run gets read before
+  it is published.
+
+Ordering that is load-bearing: **the DM is sent before the public reply.** The public
+reply says "we have sent you a DM", so it must not appear if the DM failed. A DM with no
+public acknowledgement is merely quiet; the other way round is the shop saying something
+untrue where everyone can read it.
+
+**The two loops.** Our own public reply arrives back as a comment webhook, and Meta echoes
+our own DMs on the messaging webhook. Both are dropped in `accept()` by author id and
+`is_echo`. Without them the shop talks to itself until the rate limiter stops it.
+
+**Joining a comment to the DM thread.** A comment carries a different id for a person than
+a message does, so they could not be matched from the comment alone. The private reply's
+own response carries `recipient_id` - the messaging id - so the thread is keyed on it the
+moment the DM goes out, and the customer's reply lands in the conversation that already
+holds their comment and the opener. If Meta ever omits it, that is logged loudly: the
+customer would otherwise be asked things they have already answered.
+
+**Which product a post is about** (`resolve_post_product`). Instagram says who commented
+and on which post, never which product the post shows. Caption first, because keyword
+matching against the cached catalog is free; only if that is inconclusive is the post's
+image sent to `catalog.identify_product_from_image()` - the same function and the same
+*earned* confidence rules a customer's photo goes through. Resolved or not, the answer is
+cached against the `media_id`, so a post pays once rather than once per comment. An
+unmatched post stays unmatched and the bot asks which piece they meant. **A cached match
+answers which product and never what it costs** - price and stock are always a live tool
+call, which is why the opener names a piece and carries no number.
+
+**Quota shapes the classifier.** Measured 2026-08-20 while testing this: the free tier
+is **15 requests per minute per model** (`GenerateRequestsPerMinutePerProjectPerModel-FreeTier`),
+which is a sharper limit than the ~20-per-rolling-window figure recorded earlier -
+classifying fourteen comments emptied the chat model's allowance in seconds, and every
+comment after that was silently left alone. Comments arrive whether or not a customer is
+mid-conversation, so the classifier must not be able to starve the assistant. So the free
+rules run first - a comment that is only an @mention is "neither" (the owner's call:
+tagging a friend is pointing, not asking), a row of hearts is "positive" - and only real
+words reach `GEMINI_CLASSIFIER_MODEL` (`gemini-3.5-flash`), which has its own budget for
+the same reason vision and transcription do. It judged 14 of 14 real Egyptian comments
+the way a person would, including Arabizi - and read "terrible service, I have been
+waiting two weeks" as *important* rather than negative, which is right: they want
+something done, so it belongs in a DM and not in a silent ticket. `InstagramClient` also self-throttles to
+`INSTAGRAM_MAX_ACTIONS_PER_HOUR` (200), well under Meta's ceiling: a runaway loop is
+cheaper to notice at 200 than at 750.
+
+**Negative comments file a support ticket** (the owner's decision) with
+`contact="instagram:@handle"`, which is truthful and satisfies the contact guard without
+relaxing it. Category `complaint` rather than a new one, because `CATEGORIES` is also the
+enum the chat model picks from and a web customer must not be offered "public comment".
+No public reply, no like, no DM.
+
+**The webhook is signed.** `router.py` verifies `X-Hub-Signature-256` over the *raw* body
+and fails closed when no app secret is set. Without it anyone who found the URL could post
+a fabricated comment and have the bot reply to it in public. Everything else answers 200
+even when it does nothing, because Meta disables a subscription that keeps erroring - and
+a disabled subscription is silent in exactly the way nobody notices.
+
+**Writes are never retried** in `integrations/instagram/client.py`: none of Meta's send
+endpoints are idempotent. Reads retry with backoff as Shopify's do.
+
+Attachments: a DM photo or voice note arrives as a URL, is downloaded, and goes through
+`chat/attachments.py` unchanged - the same sniffing, the same size limits, the same
+silence gate. `attachments.from_bytes()` exists so there is one validation path rather
+than two that drift. Meta's *structural* kind (video, share, story) is trusted enough to
+skip the download, because an mp4 sniffs as an audio container and "that recording is too
+short to hear" is a baffling thing to hear back about a video.
+
 ### Prompt and tool-result conventions (`app/modules/chat/agent.py`)
 
 - **Tool results carry data only, never instructions.** A result once contained
@@ -510,5 +606,7 @@ when confident and asks otherwise; COD orders use `PENDING` with tags `cash-on-d
 `chatbot` and the channel. Keep asking rather than assuming on anything comparable —
 these were the user's calls to make, not defaults to pick.
 
-Out of scope by explicit instruction: **no WhatsApp/Instagram/Facebook integration.** No
-Meta Business Provider exists. Everything is built and tested against `app/static/index.html`.
+Out of scope by explicit instruction: **no WhatsApp integration.** Instagram *is* now
+in scope - Meta Business verification was completed and comments plus DMs are built (see
+below). WhatsApp still has no Business Provider. The web widget
+(`app/static/index.html`) remains the channel everything is developed against.

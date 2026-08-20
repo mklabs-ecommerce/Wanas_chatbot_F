@@ -15,6 +15,7 @@ from app.core.config import PROJECT_ROOT, settings
 from app.core.database import init_db
 from app.modules.chat.router import router as chat_router
 from app.modules.dashboard.router import router as dashboard_router
+from app.modules.engagement.router import router as engagement_router
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -85,6 +86,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # Module routers are registered here as each module is built.
 app.include_router(chat_router)  # step 2
 app.include_router(dashboard_router)  # owner-facing view
+app.include_router(engagement_router)  # Instagram comments and DMs
 
 
 @app.get("/health", tags=["system"])
@@ -105,6 +107,14 @@ def health() -> dict:
             "api_version": settings.shopify_api_version,
         },
         "email_configured": settings.email_configured,
+        "instagram": {
+            "configured": settings.instagram_configured,
+            "enabled": settings.instagram_enabled,
+            # Worth surfacing: with this on, every path runs and nothing is ever sent.
+            # It is the difference between "quiet because nobody commented" and "quiet
+            # because it was never switched on".
+            "dry_run": settings.instagram_dry_run,
+        },
         "online_payment": settings.online_payment_configured,
         "dashboard_enabled": settings.dashboard_enabled,
     }

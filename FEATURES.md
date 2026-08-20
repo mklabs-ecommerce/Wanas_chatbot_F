@@ -1,6 +1,6 @@
 # Wanas Gallery Chatbot — What It Does, What's Next
 
-**Status as of 2026-08-19** — 522 automated tests passing, running locally at
+**Status as of 2026-08-19** — 587 automated tests passing, running locally at
 `http://127.0.0.1:8000`, connected to the live Shopify store `p0hd05-m5`.
 
 This document is written for deciding what to build next. It covers what the bot can
@@ -289,7 +289,40 @@ refunded or chased stays a ticket.
   code would invite the customer to expect a reply that is not coming.
 - One conversation is one opinion, so saying thank you twice is recorded once.
 
-### 1.13 Honesty guarantees
+### 1.14 Instagram comments and DMs
+
+Comments on your posts and reels are read and sorted, and the shop acts on them by itself.
+
+| What was left | In public | In private |
+|---|---|---|
+| **A question** - price, size, stock, an order | A short fixed reply: "Thanks for reaching out! We have sent you a DM" | A DM opens, naming the piece the post is showing, and the assistant takes the conversation from there |
+| **Praise or hearts** | The comment is liked | Nothing |
+| **Something negative** | **Nothing at all** - not answered, not liked | A support ticket, so you see it without the shop arguing in public |
+| **Anything else** - spam, tagging a friend | Nothing | Nothing |
+
+Once the DM is open it is the ordinary assistant: the catalog, cash on delivery, payment
+links, photos and voice notes all work exactly as they do in the web chat, and an order
+placed there is tagged `instagram` in Shopify so you can tell where it came from. A
+customer who comes back next week lands in the same conversation, with their history.
+
+**Tagging a friend is not a question.** "@sara شوفي دي" gets no DM - they are pointing a
+friend at the post, not asking you anything. If the friend then asks something themselves,
+that is judged on its own.
+
+**Nothing written by the AI is ever posted publicly.** The public reply and the DM opener
+are fixed wording, in Arabic or English depending on how they wrote. A comment reply is
+permanent and everyone reads it, so it is not a place to improvise.
+
+**When it is unsure, it does nothing.** If the shop cannot work out what a comment is, it
+is left alone rather than guessed at - the same position you were in before any of this
+existed. The DM is always sent before the public "we have DM'd you" reply, so that reply
+never appears unless it is true.
+
+**Start it in dry run.** `INSTAGRAM_DRY_RUN` is on by default: everything runs and decides,
+and writes what it *would* have done into the log without sending anything. Read a real
+day of comments that way, agree with the decisions, then turn it off.
+
+### 1.15 Honesty guarantees
 
 These are the rules that stop the bot inventing things, and each one exists because of a
 real bug that happened:

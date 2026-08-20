@@ -125,7 +125,9 @@ No colloquial Egyptian. The full prompt, with its honesty and payment-safety rul
 - [x] 8. `orders.service.create_cod_order()`
 - [x] 9. `modules/support` + `modules/notifications`
 - [x] 10. `modules/feedback`
-- [ ] 11. Verify channel attribution in Shopify admin
+- [x] 11. `modules/engagement` + `integrations/instagram` - comments and DMs
+- [ ] 12. Verify channel attribution in Shopify admin (an Instagram DM order should
+      carry `instagram` alongside `cash-on-delivery` and `chatbot`)
 
 ## The catalog
 
