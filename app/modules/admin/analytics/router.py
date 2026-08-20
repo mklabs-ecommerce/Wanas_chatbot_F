@@ -2,10 +2,6 @@
 
 Every route needs a logged-in account, owner or staff alike (Section 5: staff can view
 analytics, only account management and settings are owner-only).
-
-Step 2 of the build order asks for one channel - Web - verified against real data before
-the rest are opened up (step 4). ``_ALLOWED_CHANNELS`` is that gate; it grows in step 4
-rather than the route shape changing.
 """
 
 from datetime import date
@@ -14,13 +10,21 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.modules.admin.analytics import service
+from app.modules.admin.analytics.schemas import CHANNELS
 from app.modules.admin.auth.router import current_account
 from app.modules.admin.auth.schemas import Account
 
 router = APIRouter(prefix="/admin/api/analytics", tags=["admin-analytics"])
 
-# Grows to include "instagram", "all", and the placeholder channels in step 4.
-_ALLOWED_CHANNELS = ("web",)
+# Every real channel tab plus "all" (the aggregated view). Placeholder channels
+# (whatsapp, tiktok, facebook) are included - their snapshot just comes back
+# connected: false, which is exactly what their tab should show.
+_ALLOWED_CHANNELS = CHANNELS + ("all",)
+
+
+def _channel(value: str) -> Optional[str]:
+    """"all" is the wire form of ``channel=None`` - every other value passes through."""
+    return None if value == "all" else value
 
 
 @router.get("/{channel}")
@@ -46,5 +50,5 @@ async def get_snapshot(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="end must be after start")
 
-    result = await service.snapshot(channel, start, end)
+    result = await service.snapshot(_channel(channel), start, end)
     return result.to_dict()

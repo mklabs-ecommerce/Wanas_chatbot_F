@@ -243,7 +243,7 @@ async def test_conversation_and_message_volume(orders):
     assert snapshot.message_count == 1  # customer messages only, not the bot's reply
 
 
-# --- router: auth-gated, one channel for now --------------------------------
+# --- router: auth-gated, every channel (step 4) -----------------------------
 
 
 @pytest.fixture
@@ -267,9 +267,37 @@ def test_a_logged_in_account_gets_the_web_snapshot(logged_in):
     assert "orders" in body and "revenue" in body
 
 
-def test_an_unbuilt_channel_route_is_refused_for_now(logged_in):
+def test_the_instagram_channel_is_now_reachable(logged_in):
     client = TestClient(app)
     response = client.get("/admin/api/analytics/instagram", headers=logged_in)
+    assert response.status_code == 200
+    assert response.json()["channel"] == "instagram"
+
+
+def test_the_all_route_aggregates_every_channel(logged_in):
+    client = TestClient(app)
+    response = client.get("/admin/api/analytics/all", headers=logged_in)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["channel"] == "all"
+    # The fake store has 2 web orders (2001, 2002) and 1 instagram order (2003) that
+    # count; "all" must not filter any of them out.
+    assert body["orders"]["current"] == 3
+
+
+@pytest.mark.parametrize("channel", ["whatsapp", "tiktok", "facebook"])
+def test_a_placeholder_channel_route_says_so_rather_than_faking_zero_data(logged_in, channel):
+    client = TestClient(app)
+    response = client.get("/admin/api/analytics/%s" % channel, headers=logged_in)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["connected"] is False
+    assert body["channel"] == channel
+
+
+def test_an_unknown_channel_is_still_refused(logged_in):
+    client = TestClient(app)
+    response = client.get("/admin/api/analytics/snapchat", headers=logged_in)
     assert response.status_code == 400
 
 
