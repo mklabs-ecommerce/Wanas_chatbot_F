@@ -57,17 +57,40 @@ def test_bootstrap_creates_the_first_owner(monkeypatch):
     assert accounts[0].role == OWNER
 
 
-def test_bootstrap_never_overwrites_an_existing_account(monkeypatch):
+def test_bootstrap_re_syncs_the_password_on_every_restart(monkeypatch):
+    """ADMIN_OWNER_PASSWORD always wins - the owner's call, 2026-08-20."""
     monkeypatch.setattr(settings, "admin_owner_username", "boss", raising=False)
     monkeypatch.setattr(settings, "admin_owner_password", "first password here", raising=False)
     service.bootstrap_owner()
 
     monkeypatch.setattr(settings, "admin_owner_password", "second password here", raising=False)
-    service.bootstrap_owner()  # same username - must be a no-op
+    service.bootstrap_owner()  # same username, new password - restarting changes it
 
     with pytest.raises(service.AuthError):
-        service.login("boss", "second password here")
-    result = service.login("boss", "first password here")
+        service.login("boss", "first password here")
+    result = service.login("boss", "second password here")
+    assert result.account.username == "boss"
+    assert len(repository.list_accounts()) == 1  # still one account, not a duplicate
+
+
+def test_bootstrap_leaves_a_staff_account_of_the_same_name_alone(monkeypatch):
+    service._create_account("boss", "a staff password here", STAFF)
+    monkeypatch.setattr(settings, "admin_owner_username", "boss", raising=False)
+    monkeypatch.setattr(settings, "admin_owner_password", "an owner password here", raising=False)
+    service.bootstrap_owner()
+
+    accounts = repository.list_accounts()
+    assert len(accounts) == 1
+    assert accounts[0].role == STAFF  # not promoted, not duplicated
+
+
+def test_bootstrap_ignores_a_too_short_env_password(monkeypatch):
+    service._create_account("boss", "the original good password", OWNER)
+    monkeypatch.setattr(settings, "admin_owner_username", "boss", raising=False)
+    monkeypatch.setattr(settings, "admin_owner_password", "abc", raising=False)
+    service.bootstrap_owner()
+
+    result = service.login("boss", "the original good password")
     assert result.account.username == "boss"
 
 

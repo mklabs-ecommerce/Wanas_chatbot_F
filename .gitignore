@@ -6,3 +6,7 @@ data/
 *.db
 .pytest_cache/
 .DS_Store
+
+# dashboard/ (React frontend)
+dashboard/node_modules/
+dashboard/dist/

@@ -85,25 +85,44 @@ def _create_account(username: str, password: str, role: str) -> Account:
 
 
 def bootstrap_owner() -> None:
-    """Create the first owner account from the environment, if none exists yet.
+    """Create the owner account from the environment, or re-sync its password to match.
 
-    Idempotent — safe to call on every startup. Only acts when both
-    ``ADMIN_OWNER_USERNAME`` and ``ADMIN_OWNER_PASSWORD`` are set, and only when that
-    username is not already taken, so it never overwrites a password someone has since
-    changed. It does not require that no owner exists at all — a second, differently
-    named owner set in the environment is created too, which is deliberate: it gives a
-    way back in if the first owner's password is lost.
+    Runs on every startup, and **``ADMIN_OWNER_PASSWORD`` always wins** (the owner's
+    choice, 2026-08-20): editing it and restarting is the supported way to change or
+    recover the owner login, no dashboard-side "change password" screen needed. That
+    means the dashboard is not the source of truth for this one password - a password
+    changed some other way (there is currently no way to) would be overwritten on the
+    next restart, which is the intended trade for "the env variable controls who can
+    log in" rather than a surprise.
+
+    Only acts when both ``ADMIN_OWNER_USERNAME`` and ``ADMIN_OWNER_PASSWORD`` are set.
+    Leaves the account alone if the username exists as ``staff`` rather than ``owner`` -
+    that is a naming collision worth a log line, not something to silently promote.
     """
     if not (settings.admin_owner_username and settings.admin_owner_password):
         return
     username = settings.admin_owner_username.strip()
-    if repository.credentials_for(username) is not None:
+    if len(settings.admin_owner_password) < MIN_PASSWORD_LENGTH:
+        logger.warning("ADMIN_OWNER_PASSWORD is shorter than %d characters; "
+                       "leaving the owner account as it was", MIN_PASSWORD_LENGTH)
         return
-    try:
-        _create_account(username, settings.admin_owner_password, OWNER)
-        logger.info("Created owner account %r from ADMIN_OWNER_USERNAME", username)
-    except ValueError as exc:
-        logger.warning("Could not bootstrap owner account %r: %s", username, exc)
+
+    existing = repository.credentials_for(username)
+    if existing is None:
+        try:
+            _create_account(username, settings.admin_owner_password, OWNER)
+            logger.info("Created owner account %r from ADMIN_OWNER_USERNAME", username)
+        except ValueError as exc:
+            logger.warning("Could not bootstrap owner account %r: %s", username, exc)
+        return
+
+    if not existing.account.is_owner:
+        logger.warning("ADMIN_OWNER_USERNAME %r already exists as %s; leaving it alone",
+                       username, existing.account.role)
+        return
+
+    repository.set_password(existing.account.id, _hash_password(settings.admin_owner_password))
+    logger.info("Owner account %r password re-synced from ADMIN_OWNER_PASSWORD", username)
 
 
 def create_staff(username: str, password: str, acting_as: Account) -> Account:

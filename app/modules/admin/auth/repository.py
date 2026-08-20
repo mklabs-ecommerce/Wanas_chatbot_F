@@ -78,6 +78,13 @@ def create_account(username: str, password_hash: str, role: str) -> Account:
         return _to_account(row)
 
 
+def set_password(account_id: int, password_hash: str) -> None:
+    with session_scope() as session:
+        row = session.get(AdminAccount, account_id)
+        if row is not None:
+            row.password_hash = password_hash
+
+
 def credentials_for(username: str) -> Optional[Credentials]:
     """The one lookup allowed to touch a password hash — for verifying a login only."""
     with session_scope() as session:
