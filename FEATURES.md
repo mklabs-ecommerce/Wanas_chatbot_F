@@ -362,7 +362,7 @@ All in `.env`:
 | `CATALOG_CACHE_SECONDS` | 300 | How long the catalog is cached |
 | `CHAT_HISTORY_LIMIT` | 20 | Messages of context the bot remembers |
 | `DELIVERY_DAYS_MIN` / `MAX` | 3 / 5 | The delivery window the bot quotes |
-| `DASHBOARD_TOKEN` | set | Turns the owner dashboard on; 16+ chars |
+| `ADMIN_OWNER_USERNAME` / `ADMIN_OWNER_PASSWORD` | set | Owner login for the dashboard at `/admin` |
 | `STORE_OWNER_EMAIL` | `mklabsecommerce@gmail.com` | Who gets support tickets |
 
 ---

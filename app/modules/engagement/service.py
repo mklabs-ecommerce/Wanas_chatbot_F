@@ -549,9 +549,10 @@ async def handle_direct_message(event: MessageEvent) -> str:
             channel=CHANNEL,
         )
         reply, new_conversation = answer.text, answer.conversation_id
+        suppressed = answer.suppressed
     except AttachmentError as exc:
         # Written to be read by a customer, so it is sent on as the reply.
-        reply, new_conversation = str(exc), conversation_id or ""
+        reply, new_conversation, suppressed = str(exc), conversation_id or "", False
     except Exception:  # noqa: BLE001
         logger.exception("Could not answer Instagram message %s", event.message_id)
         repository.finish(event.message_id, repository.OUTCOME_FAILED,
@@ -561,6 +562,13 @@ async def handle_direct_message(event: MessageEvent) -> str:
     if new_conversation:
         repository.link_thread(event.sender_id, new_conversation)
         repository.record_inbound(event.sender_id)
+
+    if suppressed:
+        # The owner has taken this conversation over from the dashboard - the customer's
+        # message is stored (above) but the bot must not also answer it.
+        repository.finish(event.message_id, repository.OUTCOME_SKIPPED,
+                          action="owner is handling this conversation")
+        return "owner handling"
 
     if _dry_run():
         repository.finish(event.message_id, repository.OUTCOME_SKIPPED,
@@ -600,6 +608,42 @@ async def _say(event: MessageEvent, text: str) -> bool:
     except InstagramError as exc:
         logger.warning("Could not reply to %s: %s", event.sender_id, exc)
         return False
+    return True
+
+
+def username_for_conversation(conversation_id: str) -> Optional[str]:
+    """This conversation's Instagram handle, or None if it isn't one / never captured."""
+    thread = repository.thread_for_conversation(conversation_id)
+    return (thread or {}).get("username") or None
+
+
+async def send_owner_reply(conversation_id: str, text: str) -> bool:
+    """Send the owner's own words to this conversation's Instagram thread.
+
+    Mirrors the rest of this module's sends: honours the dry run, is never retried, and
+    - the one rule that matters here - the message is stored in the conversation
+    (``chat_service.post_owner_message``, which also pauses the bot for this
+    conversation) only *after* a confirmed or dry-run-simulated send. The dashboard must
+    never show a message as delivered that Instagram never received.
+    """
+    thread = repository.thread_for_conversation(conversation_id)
+    if thread is None:
+        logger.warning("No Instagram thread for conversation %s; cannot send owner reply",
+                       conversation_id)
+        return False
+    if _dry_run():
+        chat_service.post_owner_message(conversation_id, text)
+        _dry("would send owner reply to " + thread["igsid"] + ": " + text)
+        return True
+    client = _client()
+    if client is None:
+        return False
+    try:
+        await client.send_message(thread["igsid"], text)
+    except InstagramError as exc:
+        logger.warning("Could not deliver owner reply for %s: %s", conversation_id, exc)
+        return False
+    chat_service.post_owner_message(conversation_id, text)
     return True
 
 

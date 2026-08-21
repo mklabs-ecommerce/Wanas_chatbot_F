@@ -87,9 +87,17 @@ def _add_missing_columns() -> None:
     project has been developing against. This closes that gap for the simple case
     (nullable column with a default), which is all this project has needed.
 
+    SQLite only. It builds ``ALTER TABLE ... ADD COLUMN`` by hand with a type string
+    compiled for the current dialect, and the ``DEFAULT 0`` it writes for a boolean is
+    invalid on Postgres (which wants ``FALSE``). There is no equivalent gap to close on
+    Postgres in this project: every environment pointed at one starts from an empty
+    database, so ``create_all`` alone gives it every column already.
+
     Not a migration system. If a column ever needs backfilling, a type change or a
     rename, that is the point to bring in Alembic rather than to extend this.
     """
+    if not _is_sqlite:
+        return
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
 
@@ -101,7 +109,11 @@ def _add_missing_columns() -> None:
             if column.name in have:
                 continue
             kind = column.type.compile(dialect=engine.dialect)
-            default = "0" if str(column.type).upper().startswith("INTEGER") else "NULL"
+            # A NOT NULL boolean column (e.g. Conversation.owner_active) needs a real 0,
+            # not NULL - SQLite stores bool as an integer affinity, so this is the same
+            # backfill the INTEGER case already gets.
+            type_name = str(column.type).upper()
+            default = "0" if type_name.startswith("INTEGER") or type_name.startswith("BOOLEAN") else "NULL"
             statement = ("ALTER TABLE " + name + " ADD COLUMN " + column.name + " "
                          + kind + " DEFAULT " + default)
             logger.info("Adding missing column %s.%s", name, column.name)

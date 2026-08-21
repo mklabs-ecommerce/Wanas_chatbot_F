@@ -1,7 +1,14 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import * as api from '../api'
+import { ApiError } from '../api'
 import type { ChannelOrAll, ConversationDetail as Detail } from '../types'
 import StatusPill from './StatusPill'
+
+// While the panel is open on an Instagram conversation, refresh it periodically so an
+// incoming customer reply shows up without the owner closing and reopening the panel.
+// Internal-dashboard code only - not the customer-facing widget, so it carries none of
+// the risk that kept live delivery off the web channel this round.
+const POLL_MS = 5000
 
 export default function ConversationDetail({
   channel,
@@ -14,25 +21,74 @@ export default function ConversationDetail({
 }) {
   const [detail, setDetail] = useState<Detail | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [replyText, setReplyText] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    setDetail(null)
-    setError(null)
+  const load = useCallback(() => {
     api
       .getConversation(channel, conversationId)
-      .then((result) => !cancelled && setDetail(result))
-      .catch((err) => !cancelled && setError(err.message ?? 'تعذر تحميل المحادثة'))
-    return () => {
-      cancelled = true
-    }
+      .then((result) => setDetail(result))
+      .catch((err) => setError(err instanceof ApiError ? err.message : 'تعذر تحميل المحادثة'))
   }, [channel, conversationId])
+
+  useEffect(() => {
+    setDetail(null)
+    setError(null)
+    load()
+  }, [load])
+
+  useEffect(() => {
+    if (detail?.channel !== 'instagram') return
+    const timer = window.setInterval(load, POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [detail?.channel, load])
+
+  async function sendReply(event: FormEvent) {
+    event.preventDefault()
+    const text = replyText.trim()
+    if (!text || sending) return
+    setSending(true)
+    setSendError(null)
+    try {
+      await api.replyToConversation(conversationId, text)
+      setReplyText('')
+      load()
+    } catch (err) {
+      setSendError(err instanceof ApiError ? err.message : 'تعذر إرسال الرد')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  async function handBackToBot() {
+    try {
+      await api.resumeBot(conversationId)
+      load()
+    } catch (err) {
+      setSendError(err instanceof ApiError ? err.message : 'تعذر إرجاعها للبوت')
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-stretch justify-end bg-black/30 md:items-center md:justify-center">
       <div className="flex h-full w-full max-w-2xl flex-col bg-(--color-card) shadow-xl md:h-[85vh] md:rounded-2xl">
         <div className="flex items-center justify-between border-b border-(--color-line) p-4">
-          <h3 className="font-bold text-(--color-ink)">تفاصيل المحادثة</h3>
+          <div>
+            <h3 className="font-bold text-(--color-ink)">{detail?.customer_name ?? 'تفاصيل المحادثة'}</h3>
+            {detail?.channel === 'instagram' && (
+              <span
+                className={
+                  'mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-semibold ' +
+                  (detail.owner_active
+                    ? 'bg-amber-50 text-amber-700'
+                    : 'bg-(--color-positive-bg) text-(--color-accent-700)')
+                }
+              >
+                {detail.owner_active ? 'بتتابعها بنفسك دلوقتي' : 'بيرد عليها البوت'}
+              </span>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="rounded-lg px-3 py-1 text-sm text-(--color-ink-soft) hover:bg-(--color-bg)"
@@ -54,16 +110,21 @@ export default function ConversationDetail({
                 {detail.messages.map((message, index) => (
                   <div
                     key={index}
-                    className={'flex ' + (message.role === 'user' ? 'justify-start' : 'justify-end')}
+                    className={'flex ' + (message.author === 'customer' ? 'justify-start' : 'justify-end')}
                   >
                     <div
                       className={
                         'max-w-[80%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap ' +
-                        (message.role === 'user'
+                        (message.author === 'customer'
                           ? 'bg-(--color-bg) text-(--color-ink)'
-                          : 'bg-(--color-accent-50) text-(--color-ink)')
+                          : message.author === 'owner'
+                            ? 'bg-amber-50 text-(--color-ink)'
+                            : 'bg-(--color-accent-50) text-(--color-ink)')
                       }
                     >
+                      {message.author === 'owner' && (
+                        <div className="mb-1 text-xs font-semibold text-amber-700">أنت</div>
+                      )}
                       {message.content}
                     </div>
                   </div>
@@ -128,6 +189,38 @@ export default function ConversationDetail({
             </div>
           )}
         </div>
+
+        {detail?.channel === 'instagram' && (
+          <div className="border-t border-(--color-line) p-4">
+            {sendError && <p className="mb-2 text-xs text-(--color-negative)">{sendError}</p>}
+            <div className="flex items-center justify-between gap-2">
+              <form onSubmit={sendReply} className="flex flex-1 gap-2">
+                <input
+                  value={replyText}
+                  onChange={(event) => setReplyText(event.target.value)}
+                  placeholder="اكتب ردك هنا..."
+                  disabled={sending}
+                  className="flex-1 rounded-lg border border-(--color-line) bg-(--color-bg) px-3 py-2 text-sm text-(--color-ink)"
+                />
+                <button
+                  type="submit"
+                  disabled={sending || !replyText.trim()}
+                  className="rounded-lg bg-(--color-accent-500) px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  إرسال
+                </button>
+              </form>
+              {detail.owner_active && (
+                <button
+                  onClick={handBackToBot}
+                  className="shrink-0 rounded-lg px-3 py-2 text-sm text-(--color-ink-soft) hover:bg-(--color-bg)"
+                >
+                  رجّعها للبوت
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -136,3 +136,18 @@ export function getConversation(
 ): Promise<ConversationDetail> {
   return request('/conversations/' + channel + '/' + encodeURIComponent(conversationId))
 }
+
+// Instagram only - see admin/conversations/__init__.py for why. Sending a reply also
+// takes the conversation over (pauses the bot) as a side effect on the backend.
+export function replyToConversation(conversationId: string, text: string): Promise<{ sent: true }> {
+  return request('/conversations/instagram/' + encodeURIComponent(conversationId) + '/reply', {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  })
+}
+
+export function resumeBot(conversationId: string): Promise<{ resumed: true }> {
+  return request('/conversations/instagram/' + encodeURIComponent(conversationId) + '/resume', {
+    method: 'POST',
+  })
+}

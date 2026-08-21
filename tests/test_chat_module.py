@@ -3,7 +3,7 @@
 import pytest
 
 from app.integrations.llm_types import LLMAllProvidersFailed, LLMResponse
-from app.modules.chat import agent, repository, tools
+from app.modules.chat import agent, repository, service, tools
 
 
 # --- repository (chat's own tables only) ---------------------------------
@@ -234,3 +234,68 @@ async def test_that_warning_disappears_once_the_store_is_published(monkeypatch):
     assert "never send them there to order" not in prompt
     # The build-step limitations are unaffected by the storefront being open.
     assert "cannot change what is in an order" in prompt
+
+
+# --- owner takeover --------------------------------------------------------
+
+
+async def test_a_customer_turn_is_stored_but_unanswered_during_takeover(fake_llm):
+    cid = repository.ensure_conversation(None, channel="instagram")
+    repository.set_takeover(cid, True)
+
+    reply = await agent.handle_message("فين طلبي؟", conversation_id=cid)
+
+    assert reply.suppressed is True
+    assert reply.text == ""
+    assert "turns" not in fake_llm  # the model was never called
+    history = repository.get_recent_messages(cid, limit=10)
+    assert [(row["role"], row["content"]) for row in history] == [("user", "فين طلبي؟")]
+
+
+async def test_resuming_lets_the_bot_answer_again(fake_llm):
+    cid = repository.ensure_conversation(None, channel="instagram")
+    repository.set_takeover(cid, True)
+    repository.set_takeover(cid, False)
+
+    reply = await agent.handle_message("فين طلبي؟", conversation_id=cid)
+
+    assert reply.suppressed is False
+    assert reply.text == "a reply"
+
+
+async def test_a_voice_note_still_transcribes_during_takeover(fake_llm, monkeypatch):
+    from app.integrations.llm_types import AudioPart
+    from app.modules.chat.voice import Transcript
+
+    async def heard(_audio):
+        return Transcript(text="عايز اتبع اوردر", model="test")
+
+    monkeypatch.setattr(agent.voice, "transcribe", heard)
+    cid = repository.ensure_conversation(None, channel="instagram")
+    repository.set_takeover(cid, True)
+
+    reply = await agent.handle_message(
+        "", audio=[AudioPart(data=b"x", mime_type="audio/wav")], conversation_id=cid)
+
+    assert reply.suppressed is True
+    assert reply.transcript == "عايز اتبع اوردر"
+    history = repository.get_recent_messages(cid, limit=10)
+    assert "عايز اتبع اوردر" in history[0]["content"]
+
+
+def test_post_owner_message_stores_it_as_a_model_turn_and_pauses_the_bot():
+    cid = repository.ensure_conversation(None, channel="instagram")
+    service.post_owner_message(cid, "هفحصلك الاوردر دلوقتي")
+
+    history = repository.get_recent_messages(cid, limit=10)
+    assert history[-1]["role"] == repository.ROLE_MODEL
+    assert history[-1]["provider"] == repository.OWNER_PROVIDER
+    assert history[-1]["content"] == "هفحصلك الاوردر دلوقتي"
+    assert repository.is_takeover_active(cid) is True
+
+
+def test_resume_bot_clears_the_takeover_flag():
+    cid = repository.ensure_conversation(None, channel="instagram")
+    service.post_owner_message(cid, "شوية وهرد عليك")
+    service.resume_bot(cid)
+    assert repository.is_takeover_active(cid) is False

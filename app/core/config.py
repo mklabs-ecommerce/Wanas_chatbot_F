@@ -205,16 +205,10 @@ class Settings(BaseSettings):
     # the bot uses, nothing else.
     delivery_working_days: bool = True
 
-    # --- Owner dashboard --------------------------------------------------
-    # The dashboard shows customer names, phones, delivery addresses and whole
-    # transcripts, so it is off unless a token is set - never open by default. Set it to
-    # a long random string; it is compared in constant time.
-    dashboard_token: str = ""
-
     # --- Owner dashboard (admin: accounts, analytics, conversations) ------
-    # A separate, account-based login for the new React dashboard (Section 5 of
-    # owner-dashboard-plan.md) - independent of the single shared-secret /dashboard
-    # view above. How long a login stays valid before the browser must sign in again.
+    # Account-based login for the React dashboard (Section 5 of
+    # owner-dashboard-plan.md). How long a login stays valid before the browser must
+    # sign in again.
     admin_session_ttl_hours: float = 168.0
     # Controls who can log in (owner's call, 2026-08-20): creates the owner account on
     # first boot, and re-syncs its password to match on every later boot - this value
@@ -246,9 +240,20 @@ class Settings(BaseSettings):
     # --- Derived values --------------------------------------------------
     @property
     def sqlalchemy_url(self) -> str:
-        """Database URL to hand to SQLAlchemy, defaulting to a local SQLite file."""
+        """Database URL to hand to SQLAlchemy, defaulting to a local SQLite file.
+
+        Railway (like Heroku before it) hands out ``postgres://`` and ``postgresql://``
+        URLs, neither of which name a driver - SQLAlchemy then reaches for psycopg2,
+        which this project does not install. Normalised to ``postgresql+psycopg://`` so
+        the owner never has to hand-edit a platform-generated variable.
+        """
         if self.database_url:
-            return self.database_url
+            url = self.database_url
+            if url.startswith("postgres://"):
+                url = "postgresql://" + url[len("postgres://"):]
+            if url.startswith("postgresql://"):
+                url = "postgresql+psycopg://" + url[len("postgresql://"):]
+            return url
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{(DATA_DIR / 'wanas.db').as_posix()}"
 
@@ -292,9 +297,9 @@ class Settings(BaseSettings):
     def instagram_configured(self) -> bool:
         """Whether Instagram can be talked to at all.
 
-        Fails closed like ``dashboard_enabled``: a half-configured integration would
-        act in public with no way to check an event was genuine, so all three of the
-        token, our own account id and the app secret are required together.
+        Fails closed: a half-configured integration would act in public with no way to
+        check an event was genuine, so all three of the token, our own account id and
+        the app secret are required together.
         """
         return bool(self.instagram_access_token
                     and self.instagram_business_account_id
@@ -315,15 +320,6 @@ class Settings(BaseSettings):
     def delivery_period_known(self) -> bool:
         """Whether there is a real delivery window to quote."""
         return self.delivery_days_min > 0 and self.delivery_days_max >= self.delivery_days_min
-
-    @property
-    def dashboard_enabled(self) -> bool:
-        """Off unless a token is set. A short token is treated as no token.
-
-        Fails closed on purpose: everything behind the dashboard is customer personal
-        data, so the accident of an unset variable must not publish it.
-        """
-        return len(self.dashboard_token.strip()) >= 16
 
     def missing_required(self) -> List[str]:
         """Config the app cannot work at all without."""

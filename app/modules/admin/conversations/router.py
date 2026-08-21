@@ -1,7 +1,9 @@
-"""Read-only conversation endpoints for the owner dashboard.
+"""Conversation endpoints for the owner dashboard.
 
-Every route needs a logged-in account, owner or staff alike (Section 5). No reply, no
-takeover - listing and detail only, per Section 4's confirmed v1 scope.
+Every route needs a logged-in account, owner or staff alike (Section 5). Listing and
+detail are read-only for every channel. One write path exists - replying to and taking
+over an Instagram conversation - see ``app/modules/admin/conversations/__init__.py``
+for why it is Instagram-only and what stays read-only.
 """
 
 from typing import Optional
@@ -12,6 +14,7 @@ from app.modules.admin.analytics.schemas import CHANNELS
 from app.modules.admin.auth.router import current_account
 from app.modules.admin.auth.schemas import Account
 from app.modules.admin.conversations import service
+from app.modules.admin.conversations.schemas import ReplyBody
 
 router = APIRouter(prefix="/admin/api/conversations", tags=["admin-conversations"])
 
@@ -66,5 +69,36 @@ async def get_conversation(
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     if channel != "all" and result["channel"] != channel:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return result
+
+
+# Deliberately not under the generic /{channel}/{conversation_id} shape the read routes
+# use - the URL itself states the current restriction, and no other channel can deliver
+# a reply outside its own request/response cycle yet (see the module docstring).
+@router.post("/instagram/{conversation_id}/reply")
+async def reply(
+    conversation_id: str,
+    body: ReplyBody,
+    _: Account = Depends(current_account),
+) -> dict:
+    result = await service.reply(conversation_id, body.text)
+    if result.get("error") == "not_found":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    if result.get("error") == "empty":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reply text is empty")
+    if result.get("error") == "delivery_failed":
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail="Could not deliver the reply on Instagram")
+    return result
+
+
+@router.post("/instagram/{conversation_id}/resume")
+def resume(
+    conversation_id: str,
+    _: Account = Depends(current_account),
+) -> dict:
+    result = service.resume(conversation_id)
+    if result.get("error") == "not_found":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return result

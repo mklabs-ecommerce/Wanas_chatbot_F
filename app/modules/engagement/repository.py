@@ -271,6 +271,27 @@ def thread(igsid: str) -> Optional[dict]:
         }
 
 
+def thread_for_conversation(conversation_id: str) -> Optional[dict]:
+    """The Instagram thread behind a conversation, or None if it isn't one.
+
+    ``conversation_id`` is indexed on this table, so this costs one lookup - used to
+    find the igsid to send an owner's reply to.
+    """
+    if not conversation_id:
+        return None
+    with session_scope() as session:
+        row = session.execute(
+            select(InstagramThread).where(InstagramThread.conversation_id == conversation_id)
+        ).scalars().first()
+        if row is None:
+            return None
+        return {
+            "igsid": row.igsid,
+            "conversation_id": row.conversation_id,
+            "username": row.username,
+        }
+
+
 def link_thread(igsid: str, conversation_id: str, username: str = "",
                 opened_from_comment: Optional[str] = None) -> None:
     """Attach an Instagram user to a conversation, keeping the first one they got."""

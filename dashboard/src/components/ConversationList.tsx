@@ -66,12 +66,13 @@ export default function ConversationList({ conversations, sort, onSortChange, on
                         title={conversation.worst_sentiment}
                       />
                     )}
-                    <span className="text-xs text-(--color-ink-soft)">{timeAgo(conversation.last_at)}</span>
+                    <span className="font-bold text-(--color-ink)">{conversation.customer_name}</span>
                   </div>
-                  <div className="ltr-num flex gap-1 text-xs text-(--color-ink-soft)">
-                    {conversation.order_count > 0 && <Badge>{conversation.order_count} طلب</Badge>}
-                    {conversation.ticket_count > 0 && <Badge tone="negative">{conversation.ticket_count} شكوى</Badge>}
-                  </div>
+                  <span className="text-xs text-(--color-ink-soft)">{timeAgo(conversation.last_at)}</span>
+                </div>
+                <div className="ltr-num flex gap-1 text-xs text-(--color-ink-soft)">
+                  {conversation.order_count > 0 && <Badge>{conversation.order_count} طلب</Badge>}
+                  {conversation.ticket_count > 0 && <Badge tone="negative">{conversation.ticket_count} شكوى</Badge>}
                 </div>
                 <p className="line-clamp-2 text-sm text-(--color-ink)">
                   {conversation.last_message || '(بدون رسائل بعد)'}

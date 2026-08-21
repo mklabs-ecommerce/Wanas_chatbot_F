@@ -93,6 +93,7 @@ export interface Snapshot {
 export interface ConversationSummary {
   conversation_id: string
   channel: Channel
+  customer_name: string
   started_at: string | null
   last_at: string | null
   message_count: number
@@ -152,10 +153,22 @@ export interface TicketRow {
   created_at: string | null
 }
 
+export interface ConversationMessage {
+  role: 'user' | 'model'
+  // Who actually wrote it - a bot and an owner both store as role "model" (see
+  // app/modules/chat/repository.py's OWNER_PROVIDER), so this is what tells them apart.
+  author: 'customer' | 'bot' | 'owner'
+  content: string
+}
+
 export interface ConversationDetail {
   conversation_id: string
   channel: Channel
-  messages: { role: 'user' | 'model'; content: string }[]
+  customer_name: string
+  // Reply/takeover exists for Instagram only - see admin/conversations/__init__.py.
+  owner_active: boolean
+  taken_over_at: string | null
+  messages: ConversationMessage[]
   orders: OrderRow[]
   orders_readable: boolean
   feedback: FeedbackRow[]

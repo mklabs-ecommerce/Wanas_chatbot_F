@@ -42,6 +42,8 @@ class AgentReply:
     tools_used: List[str] = field(default_factory=list)
     # What a voice note was heard as, so the customer can be shown their own words.
     transcript: Optional[str] = None
+    # See chat/schemas.py's Answer.suppressed - the same meaning, one level down.
+    suppressed: bool = False
 
 
 SYSTEM_PROMPT = """You are the customer assistant for Wanas Gallery, a premium clothing \
@@ -521,6 +523,16 @@ async def handle_message(
     if images:
         logger.info("Conversation %s received %d image(s): %s", conversation_id,
                     len(images), ", ".join(image.mime_type for image in images))
+
+    if repository.is_takeover_active(conversation_id):
+        # The owner is answering this conversation by hand from the dashboard. The
+        # customer's turn is stored above like any other; everything past this point -
+        # tools, the reply itself, the shipping/feedback/payment checks - is the bot's
+        # job, so none of it runs while a person has taken over.
+        return AgentReply(
+            conversation_id=conversation_id, text="", model="none", provider="none",
+            transcript=transcript, suppressed=True,
+        )
 
     # Has an order this conversation placed since been delivered? Read once per turn and
     # reused below, so a customer turn costs at most one extra Shopify lookup. Never

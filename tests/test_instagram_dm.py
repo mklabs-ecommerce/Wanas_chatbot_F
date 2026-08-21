@@ -184,6 +184,64 @@ async def test_an_assistant_failure_does_not_take_the_process_down(fake, monkeyp
     assert fake.sent == []
 
 
+# --- owner takeover ---------------------------------------------------------
+
+
+async def test_a_suppressed_answer_is_not_sent_because_the_owner_is_handling_it(fake, monkeypatch):
+    async def taken_over(**kwargs):
+        return Answer(conversation_id="conv-owner", text="", suppressed=True)
+
+    monkeypatch.setattr(service.chat_service, "handle_message", taken_over)
+    repository.claim("mid-takeover", repository.KIND_MESSAGE)
+
+    result = await service.handle_direct_message(_message(message_id="mid-takeover"))
+
+    assert result == "owner handling"
+    assert fake.sent == []
+    assert repository.handled("mid-takeover")["outcome"] == repository.OUTCOME_SKIPPED
+    # The thread is still linked/recorded - only the send is skipped.
+    assert repository.thread(THEM)["conversation_id"] == "conv-owner"
+
+
+async def test_send_owner_reply_stores_only_after_a_confirmed_send(fake):
+    repository.link_thread(THEM, "conv-1")
+    sent = await service.send_owner_reply("conv-1", "هفحصلك الاوردر")
+
+    assert sent is True
+    assert fake.sent == [(THEM, "هفحصلك الاوردر")]
+    history = chat_service.transcript("conv-1")
+    assert history[-1]["content"] == "هفحصلك الاوردر"
+    assert repository.thread(THEM)["conversation_id"] == "conv-1"
+
+
+async def test_send_owner_reply_does_not_store_when_delivery_fails(monkeypatch):
+    broken = FakeClient(send_error=ig_client.InstagramUnavailable("timeout"))
+    monkeypatch.setattr(service, "_client", lambda: broken)
+    repository.link_thread(THEM, "conv-2")
+
+    sent = await service.send_owner_reply("conv-2", "هفحصلك الاوردر")
+
+    assert sent is False
+    assert chat_service.transcript("conv-2") == []
+
+
+async def test_send_owner_reply_refuses_a_conversation_with_no_instagram_thread(fake):
+    sent = await service.send_owner_reply("conv-nobody", "hi")
+    assert sent is False
+    assert fake.sent == []
+
+
+async def test_a_dry_run_owner_reply_stores_but_sends_nothing(fake, monkeypatch):
+    monkeypatch.setattr(settings, "instagram_dry_run", True, raising=False)
+    repository.link_thread(THEM, "conv-3")
+
+    sent = await service.send_owner_reply("conv-3", "هفحصلك الاوردر")
+
+    assert sent is True
+    assert fake.sent == []
+    assert chat_service.transcript("conv-3")[-1]["content"] == "هفحصلك الاوردر"
+
+
 # --- attachments ----------------------------------------------------------
 
 

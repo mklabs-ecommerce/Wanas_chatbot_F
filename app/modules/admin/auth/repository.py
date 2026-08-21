@@ -5,9 +5,7 @@ Per the boundary rules this is the only code permitted to query ``admin_accounts
 they get ``schemas.Account`` back from ``service.py`` instead.
 
 A session is stored by the SHA-256 of its bearer token, never the token itself, so a
-leaked database does not also hand out every live login — the same reason
-``modules/dashboard`` compares its token in constant time rather than storing it in the
-clear anywhere reachable.
+leaked database does not also hand out every live login.
 """
 
 import logging

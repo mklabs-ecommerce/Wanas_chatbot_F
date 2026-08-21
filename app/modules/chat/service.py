@@ -117,7 +117,24 @@ async def handle_message(
         degraded=reply.degraded,
         tools_used=list(reply.tools_used),
         transcript=reply.transcript,
+        suppressed=reply.suppressed,
     )
+
+
+def post_owner_message(conversation_id: str, text: str) -> None:
+    """Record the owner's own reply and pause the bot for this conversation.
+
+    Stored with role=ROLE_MODEL (see repository.OWNER_PROVIDER for why) so it still
+    reads as an assistant turn once the bot resumes.
+    """
+    repository.add_message(conversation_id, repository.ROLE_MODEL, text,
+                           provider=repository.OWNER_PROVIDER)
+    repository.set_takeover(conversation_id, True)
+
+
+def resume_bot(conversation_id: str) -> None:
+    """Hand a conversation back to the bot."""
+    repository.set_takeover(conversation_id, False)
 
 
 def _sort_attachments(raw: Iterable[Tuple[bytes, Optional[str]]]):

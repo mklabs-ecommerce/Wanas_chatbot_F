@@ -8,11 +8,15 @@ of the older shared-token dashboard.
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
 from app.main import app
 from app.modules.admin.auth import service as auth_service
 from app.modules.admin.auth.schemas import OWNER
 from app.modules.chat import repository as chat_repository
+from app.modules.engagement import repository as engagement_repository
+from app.modules.feedback import service as feedback_service
 from app.modules.orders import repository as orders_repository
+from app.modules.support import service as support_service
 
 
 @pytest.fixture
@@ -192,10 +196,10 @@ async def test_no_orders_and_unreadable_orders_are_different_facts():
     assert detail["orders_readable"] is True
 
 
-# --- read-only: no reply, no takeover ----------------------------------------
+# --- read-only for every channel except the one Instagram write path below --
 
 
-def test_there_is_no_way_to_send_a_message_through_this_module(logged_in, client):
+def test_there_is_no_way_to_send_a_web_message_through_this_module(logged_in, client):
     cid = _web()
     for method in (client.post, client.put, client.patch):
         response = method("/admin/api/conversations/web/" + cid, headers=logged_in,
@@ -222,3 +226,141 @@ def test_a_staff_account_can_list_and_read_conversations(logged_in, client):
     assert client.get("/admin/api/conversations/web", headers=staff_headers).status_code == 200
     assert client.get("/admin/api/conversations/web/" + cid,
                       headers=staff_headers).status_code == 200
+
+
+# --- customer name -------------------------------------------------------
+
+
+def test_an_instagram_conversation_is_titled_with_the_handle(logged_in, client):
+    cid = _instagram()
+    chat_repository.add_message(cid, chat_repository.ROLE_USER, "hi")
+    engagement_repository.link_thread("igsid-1", cid, username="sara_wears")
+
+    row = client.get("/admin/api/conversations/instagram",
+                     headers=logged_in).json()["conversations"][0]
+    detail = client.get("/admin/api/conversations/instagram/" + cid, headers=logged_in).json()
+    assert row["customer_name"] == "@sara_wears"
+    assert detail["customer_name"] == "@sara_wears"
+
+
+async def test_a_web_conversation_falls_back_to_a_ticket_or_feedback_name(logged_in, client):
+    cid = _web()
+    chat_repository.add_message(cid, chat_repository.ROLE_USER, "hi")
+    await support_service.create_ticket(
+        category="damaged_or_faulty",
+        summary="The hoodie arrived with a tear along the sleeve seam.",
+        customer_name="Mona Hassan", contact="mona@example.com",
+        conversation_id=cid, channel="web",
+    )
+
+    row = client.get("/admin/api/conversations/web",
+                     headers=logged_in).json()["conversations"][0]
+    assert row["customer_name"] == "Mona Hassan"
+
+
+async def test_a_web_conversation_falls_back_to_feedback_when_there_is_no_ticket(logged_in, client):
+    cid = _web()
+    chat_repository.add_message(cid, chat_repository.ROLE_USER, "hi")
+    await feedback_service.record_feedback(
+        comment="حبيت الاوردر جدا", customer_name="Laila", conversation_id=cid, channel="web")
+
+    row = client.get("/admin/api/conversations/web",
+                     headers=logged_in).json()["conversations"][0]
+    assert row["customer_name"] == "Laila"
+
+
+async def test_a_web_conversation_with_no_name_anywhere_falls_back_to_a_short_id(logged_in, client):
+    cid = _web()
+    chat_repository.add_message(cid, chat_repository.ROLE_USER, "hi")
+
+    row = client.get("/admin/api/conversations/web",
+                     headers=logged_in).json()["conversations"][0]
+    assert row["customer_name"] == "عميل " + cid[:8]
+
+
+# --- Instagram reply and takeover -----------------------------------------
+
+
+def test_replying_to_a_non_instagram_conversation_is_refused(logged_in, client):
+    cid = _web()
+    chat_repository.add_message(cid, chat_repository.ROLE_USER, "hi")
+    response = client.post("/admin/api/conversations/instagram/" + cid + "/reply",
+                           headers=logged_in, json={"text": "hi"})
+    assert response.status_code == 404
+
+
+def test_replying_to_an_unknown_conversation_is_404(logged_in, client):
+    response = client.post("/admin/api/conversations/instagram/does-not-exist/reply",
+                           headers=logged_in, json={"text": "hi"})
+    assert response.status_code == 404
+
+
+def test_an_empty_reply_is_refused(logged_in, client):
+    cid = _instagram()
+    engagement_repository.link_thread("igsid-2", cid, username="sara")
+    response = client.post("/admin/api/conversations/instagram/" + cid + "/reply",
+                           headers=logged_in, json={"text": "   "})
+    assert response.status_code == 400
+
+
+def test_a_reply_is_stored_and_takes_the_conversation_over(logged_in, client):
+    """Default test settings run Instagram in dry run - the send is simulated, and the
+    message is still stored the same way a real send would leave it."""
+    cid = _instagram()
+    engagement_repository.link_thread("igsid-3", cid, username="sara")
+
+    response = client.post("/admin/api/conversations/instagram/" + cid + "/reply",
+                           headers=logged_in, json={"text": "هفحصلك الاوردر دلوقتي"})
+    assert response.status_code == 200
+    assert response.json() == {"sent": True}
+
+    detail = client.get("/admin/api/conversations/instagram/" + cid, headers=logged_in).json()
+    assert detail["owner_active"] is True
+    assert detail["taken_over_at"] is not None
+    assert detail["messages"][-1] == {
+        "role": "model", "author": "owner", "content": "هفحصلك الاوردر دلوقتي"}
+
+
+def test_a_reply_with_no_instagram_thread_reports_delivery_failure(logged_in, client, monkeypatch):
+    monkeypatch.setattr(settings, "instagram_dry_run", False, raising=False)
+    cid = _instagram()  # no thread ever linked
+
+    response = client.post("/admin/api/conversations/instagram/" + cid + "/reply",
+                           headers=logged_in, json={"text": "hi"})
+    assert response.status_code == 502
+
+
+def test_resuming_a_non_instagram_conversation_is_refused(logged_in, client):
+    cid = _web()
+    chat_repository.add_message(cid, chat_repository.ROLE_USER, "hi")
+    assert client.post("/admin/api/conversations/instagram/" + cid + "/resume",
+                       headers=logged_in).status_code == 404
+
+
+def test_resuming_hands_the_conversation_back_to_the_bot(logged_in, client):
+    cid = _instagram()
+    engagement_repository.link_thread("igsid-4", cid, username="sara")
+    client.post("/admin/api/conversations/instagram/" + cid + "/reply",
+               headers=logged_in, json={"text": "هرد عليك دلوقتي"})
+
+    response = client.post("/admin/api/conversations/instagram/" + cid + "/resume",
+                           headers=logged_in)
+    assert response.status_code == 200
+    assert response.json() == {"resumed": True}
+
+    detail = client.get("/admin/api/conversations/instagram/" + cid, headers=logged_in).json()
+    assert detail["owner_active"] is False
+    assert detail["taken_over_at"] is None
+
+
+def test_a_bot_reply_shows_up_as_bot_not_owner(logged_in, client):
+    cid = _instagram()
+    chat_repository.add_message(cid, chat_repository.ROLE_USER, "hi")
+    chat_repository.add_message(cid, chat_repository.ROLE_MODEL, "أهلاً بيك",
+                                provider="gemini")
+
+    detail = client.get("/admin/api/conversations/instagram/" + cid, headers=logged_in).json()
+    assert detail["messages"] == [
+        {"role": "user", "author": "customer", "content": "hi"},
+        {"role": "model", "author": "bot", "content": "أهلاً بيك"},
+    ]

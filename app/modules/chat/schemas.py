@@ -78,3 +78,7 @@ class Answer:
     tools_used: List[str] = dataclass_field(default_factory=list)
     # What a voice note was heard as, when one was sent.
     transcript: Optional[str] = None
+    # True when the owner has taken this conversation over from the dashboard: the
+    # customer's turn was stored, but ``text`` is empty on purpose - the caller must not
+    # send anything on, because a person is answering by hand instead.
+    suppressed: bool = False

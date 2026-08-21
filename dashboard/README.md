@@ -53,6 +53,23 @@ consequences:
 - **`ADMIN_OWNER_PASSWORD` always wins** (owner's call, 2026-08-20) — there is
   deliberately no change-password screen here. Changing the owner password is
   edit-`.env`-and-restart, on the backend.
+- **The conversation title is a resolved name, not raw data** — `customer_name` on
+  every conversation is always a non-blank string computed backend-side
+  (`admin/conversations/service.py`'s `_customer_name`): the Instagram handle when there
+  is one, else a name from a support ticket or feedback row, else `"عميل " + id[:8]`.
+  The frontend never falls back on its own, so `ConversationList.tsx` and
+  `ConversationDetail.tsx`'s header can't disagree.
+- **Instagram reply/takeover is the one write path** (owner's call, 2026-08-20) — every
+  other channel, including web, stays read-only. Sending a reply from the dashboard
+  pauses the bot for that conversation (`chat.agent.handle_message` checks
+  `repository.is_takeover_active` right after storing the customer's turn); "رجّعها
+  للبوت" clears it. A bot message and an owner message are both stored as
+  `role=ROLE_MODEL` — a new role would corrupt Gemini's turn alternation once the bot
+  resumes — so `ConversationDetail.tsx` tells them apart by the `author` field the
+  backend derives from `provider`, not from `role`. `ConversationDetail.tsx` polls its
+  open conversation every 5s while `channel === 'instagram'`, so an incoming reply shows
+  without reopening the panel — safe to do here because this is internal-dashboard code,
+  not the customer-facing widget the "web is out of scope for now" call was about.
 
 ## Before deploying
 
@@ -78,6 +95,10 @@ unverified beyond "the code should do this" — check them for real before trust
   card stacking, the conversation detail panel's full-screen behaviour.
 - That login actually works end-to-end in a live browser session (verified only via
   curl against both the dev proxy and the production build's static serving).
+- The Instagram reply box and the 5-second poll: verified through the backend's dry-run
+  path and `pytest`/`tsc`/`npm run build`, never in a live browser against a real
+  Instagram thread. Send a reply from a second account and watch it arrive in-app before
+  trusting the takeover/hand-back flow end to end.
 
 Two bugs were found and fixed by reasoning rather than by seeing them, which is worth
 naming precisely *because* neither would have shown up in a build or a curl check:

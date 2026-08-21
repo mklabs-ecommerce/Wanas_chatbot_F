@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base, session_scope
@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 # Roles as stored. "model" matches the LLM-side vocabulary so no translation is needed.
 ROLE_USER = "user"
 ROLE_MODEL = "model"
+
+# An owner's own reply is stored with role=ROLE_MODEL (not a role of its own) so it
+# still reads as an assistant turn to Gemini once the bot resumes - a new role would
+# make the history builder in agent.py map it to "user", which would put two customer
+# turns in a row and corrupt the conversation for the model. This ``provider`` value is
+# how the dashboard tells an owner's own words apart from the bot's.
+OWNER_PROVIDER = "owner"
 
 
 def _now() -> datetime:
@@ -39,6 +46,11 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+    # True while the owner is handling this conversation by hand from the dashboard -
+    # the agent checks this and stops auto-replying until it is cleared. Instagram only
+    # today; see chat/agent.py.
+    owner_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    taken_over_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     messages: Mapped[List["ChatMessage"]] = relationship(
         back_populates="conversation",
@@ -118,15 +130,15 @@ def get_recent_messages(conversation_id: str, limit: int) -> List[dict]:
     """
     with session_scope() as session:
         stmt = (
-            select(ChatMessage.role, ChatMessage.content)
+            select(ChatMessage.role, ChatMessage.content, ChatMessage.provider)
             .where(ChatMessage.conversation_id == conversation_id)
             .order_by(ChatMessage.id.desc())
             .limit(limit)
         )
         # Read the columns inside the session: committing expires ORM instances, so
         # touching their attributes afterwards raises DetachedInstanceError.
-        rows = [{"role": role, "content": content}
-                for role, content in session.execute(stmt).all()]
+        rows = [{"role": role, "content": content, "provider": provider}
+                for role, content, provider in session.execute(stmt).all()]
     rows.reverse()
     return rows
 
@@ -240,4 +252,21 @@ def get_conversation(conversation_id: str) -> Optional[dict]:
         if row is None:
             return None
         return {"conversation_id": row.id, "channel": row.channel,
-                "started_at": row.created_at, "last_at": row.updated_at}
+                "started_at": row.created_at, "last_at": row.updated_at,
+                "owner_active": row.owner_active, "taken_over_at": row.taken_over_at}
+
+
+def set_takeover(conversation_id: str, active: bool) -> None:
+    """Mark whether the owner is handling this conversation by hand right now."""
+    with session_scope() as session:
+        row = session.get(Conversation, conversation_id)
+        if row is None:
+            return
+        row.owner_active = active
+        row.taken_over_at = _now() if active else None
+
+
+def is_takeover_active(conversation_id: str) -> bool:
+    with session_scope() as session:
+        row = session.get(Conversation, conversation_id)
+        return bool(row and row.owner_active)

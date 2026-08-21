@@ -16,7 +16,6 @@ from app.core.database import init_db
 from app.modules.admin.auth import service as admin_auth_service
 from app.modules.admin.router import router as admin_router
 from app.modules.chat.router import router as chat_router
-from app.modules.dashboard.router import router as dashboard_router
 from app.modules.engagement.router import router as engagement_router
 
 logging.basicConfig(
@@ -94,7 +93,6 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Module routers are registered here as each module is built.
 app.include_router(chat_router)  # step 2
-app.include_router(dashboard_router)  # owner-facing view (single shared token)
 app.include_router(engagement_router)  # Instagram comments and DMs
 app.include_router(admin_router)  # owner dashboard: accounts, analytics, conversations
 
@@ -138,7 +136,6 @@ def health() -> dict:
             "dry_run": settings.instagram_dry_run,
         },
         "online_payment": settings.online_payment_configured,
-        "dashboard_enabled": settings.dashboard_enabled,
         "admin_owner_bootstrap_configured": bool(
             settings.admin_owner_username and settings.admin_owner_password
         ),

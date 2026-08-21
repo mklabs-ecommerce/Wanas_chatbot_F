@@ -32,6 +32,25 @@ its `sqlite3` segfaults on `connect()` because `_sqlite3.pyd` binds a mismatched
 Tests never touch the network and never spend Gemini quota: `conftest.py` gives each test
 a throwaway SQLite file and clears the module-level LLM cooldowns.
 
+### Database engine (`app/core/database.py`, `app/core/config.py`)
+
+SQLite locally (unset `DATABASE_URL`, `./data/wanas.db`), Postgres in production
+(Railway's provisioned database). `sqlalchemy_url` normalises whatever scheme the
+platform hands out — `postgres://` or `postgresql://`, neither naming a driver — to
+`postgresql+psycopg://`, so a Railway-generated `DATABASE_URL` works unedited. Every
+`_now()` helper across the modules already returns `datetime.now(timezone.utc)`, so the
+date-range queries (`admin.analytics`, `conversation_count_in_range`, etc.) compare
+tz-aware Python values against `DateTime(timezone=True)` columns on both dialects —
+verified live against a throwaway Postgres container, not just inferred.
+
+`_add_missing_columns()` (the informal migration patcher described below) is **SQLite
+only**, gated on `dialect.name`. It builds `ALTER TABLE` DDL by hand, including a
+`DEFAULT 0` for booleans that Postgres rejects (it wants `FALSE`), and there is nothing
+for it to patch on Postgres anyway — every Postgres environment this project points at
+starts from an empty database, so `create_all()` alone gives it every column already.
+Don't make this function bilingual; if Postgres ever needs real migrations, that is
+Alembic's job, not this one's.
+
 ## Architecture
 
 One FastAPI process, internally a modular monolith. A request flows:
@@ -58,8 +77,11 @@ POST /chat → modules/chat/router.py → agent.handle_message()
   a turn. `notifications` imports `support.schemas` and
   `feedback.schemas` rather than their services, which is what keeps those two edges from
   being cycles. The owner dashboard adds `admin.analytics → orders + chat + support +
-  feedback + engagement` and `admin.conversations → chat + orders + support + feedback`,
-  both read-only; `chat.service` and `chat.repository` gained channel-filtered and
+  feedback + engagement` and `admin.conversations → chat + orders + support + feedback +
+  engagement`; every edge from `admin.conversations` is read-only except one write path,
+  Instagram reply/takeover, which goes through `chat.service.post_owner_message()` /
+  `resume_bot()` and `engagement.service.send_owner_reply()` — never around them.
+  `chat.service` and `chat.repository` gained channel-filtered and
   date-ranged variants of what they already exposed (`conversations(limit, channel)`,
   `conversation_count_in_range()`, `inbound_timestamps_in_range()`, `get_conversation()`)
   rather than `admin` reaching into `chat`'s tables.
@@ -621,18 +643,52 @@ chatbot-tagged order regardless of channel, including a handful of real `whatsap
 tagged orders from before this chatbot existed — so "all" can be larger than
 `web + instagram` combined, honestly, and that gap has no tab of its own to explain it.
 
-**`admin.conversations` is read-only** — no send, no reply, no takeover, and nothing
-should be built in anticipation of one (`app/modules/admin/__init__.py` says so
-explicitly). It cannot import `modules/dashboard` (the older, single-shared-token owner
-view) because that module's own docstring says nothing may depend on it, so its
-`service.py` is a parallel implementation of the same read-composition shape, not a
-reuse. **`"all" shows analytics only, never a merged conversation list`** (owner's call,
-2026-08-20) — the backend's `/admin/api/conversations/all` works and is tested, but
-`dashboard/src/pages/Dashboard.tsx` never calls it; mixing every channel's conversations
-into one list wasn't wanted. Asking for a real conversation under the wrong channel's
-URL is a 404, not a cross-channel leak — `chat.service.get_conversation()` exists
-because `transcript()` alone can't tell "no such conversation" apart from "a real one
-with no messages yet", and both look like an empty list otherwise.
+**`admin.conversations` is read-only for every channel except one write path: Instagram
+reply/takeover** (owner's call, 2026-08-20). It replaces the older, single-shared-token
+`modules/dashboard` view, removed 2026-08-20 once this module and the React frontend
+covered everything it did — `DASHBOARD_TOKEN` and the `/dashboard` route no longer exist.
+**`"all" shows analytics only, never a merged
+conversation list`** (owner's call, 2026-08-20) — the backend's
+`/admin/api/conversations/all` works and is tested, but `dashboard/src/pages/Dashboard.tsx`
+never calls it; mixing every channel's conversations into one list wasn't wanted. Asking
+for a real conversation under the wrong channel's URL is a 404, not a cross-channel leak
+— `chat.service.get_conversation()` exists because `transcript()` alone can't tell "no
+such conversation" apart from "a real one with no messages yet", and both look like an
+empty list otherwise.
+
+**Every conversation's title is a resolved `customer_name`, never blank.** Nothing
+stores a customer's name directly; `admin/conversations/service.py`'s `_customer_name()`
+tries the Instagram handle (`engagement.service.username_for_conversation()`), then a
+support ticket's or feedback's `customer_name`, then falls back to `"عميل " +
+conversation_id[:8]`. Resolved once, backend-side, so the list row and the detail
+header can never disagree and the frontend carries no fallback logic of its own.
+
+**The owner can reply to, and take over, an Instagram conversation from the
+dashboard** — the one deliberate reversal of the original "nothing built toward a reply
+feature" decision, scoped to Instagram only (owner's call, 2026-08-20): the web widget
+(`app/static/index.html`) only ever gets a reply inside its own `POST /chat` response,
+with no push channel to deliver a dashboard reply through, so a web write path would
+need polling added to that customer-facing file — a separate decision, not taken here.
+Sending a reply (`POST /admin/api/conversations/instagram/{id}/reply`) calls
+`engagement.service.send_owner_reply()`, which sends on Instagram first and only stores
+the message — via `chat.service.post_owner_message()`, which also flips
+`conversations.owner_active` — once the send is confirmed (or simulated, in dry run):
+the dashboard must never show a message as delivered that Instagram never received,
+mirroring the "the send is the source of truth" rule `create_order` and the payment link
+already follow. `chat/agent.py` checks `repository.is_takeover_active()` right after
+storing the customer's turn and, if set, returns immediately — no tools, no reply, and
+none of the shipping/feedback/payment side-effect checks run again until the owner hands
+the conversation back (`POST .../resume`). **Owner messages are stored with
+`role=ROLE_MODEL`, not a role of their own** — a new role would make `agent.py`'s
+Gemini-history builder treat it as a customer turn once the bot resumes, putting two
+customer turns in a row and corrupting what the model believes was said. Instead
+`chat/repository.py`'s `OWNER_PROVIDER` sentinel rides in the existing `provider` column,
+and `admin/conversations/service.py` turns `role` + `provider` into the `author`
+(`customer`/`bot`/`owner`) the frontend actually renders on. `ConversationDetail.tsx`
+polls its open conversation every 5 seconds while `channel === 'instagram'` so an
+incoming reply appears without reopening the panel — safe here specifically because it
+is internal-dashboard code, not the customer-facing widget the web-is-out-of-scope call
+was about.
 
 **The frontend has no router library.** The only two screens are the login page and the
 dashboard shell; channel/tab selection is React state, not a URL, so there is no deep

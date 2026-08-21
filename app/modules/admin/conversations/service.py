@@ -1,16 +1,22 @@
 """Assembling the conversation list and detail view from what other modules expose.
 
-This module reads and composes; it decides nothing and sends nothing. Every fact comes
-from another module's public ``service.py`` - orders are read live from Shopify so what
-the owner sees is the order as it stands now, everything else from the local database.
-Gathered defensively throughout: Shopify being unreachable should cost the orders
-column of one conversation, never the whole page.
+This module mostly reads and composes: every fact comes from another module's public
+``service.py`` - orders are read live from Shopify so what the owner sees is the order
+as it stands now, everything else from the local database. Gathered defensively
+throughout: Shopify being unreachable should cost the orders column of one
+conversation, never the whole page.
+
+One write path exists: ``reply()``/``resume()`` let the owner answer an Instagram DM by
+hand and hand it back to the bot - see ``app/modules/admin/conversations/__init__.py``
+for what is and is not in scope. Both go through ``engagement.service`` and
+``chat.service``, never around them.
 """
 
 import logging
 from typing import Any, Dict, List, Optional
 
 from app.modules.chat import service as chat_service
+from app.modules.engagement import service as engagement_service
 from app.modules.feedback import service as feedback_service
 from app.modules.orders import service as orders_service
 from app.modules.support import service as support_service
@@ -42,16 +48,19 @@ def list_conversations(channel: Optional[str], limit: int = DEFAULT_LIMIT,
     rows: List[Dict[str, Any]] = []
     for summary in chat_service.conversations(limit, channel):
         conversation_id = summary["conversation_id"]
+        row_channel = summary["channel"]
+        tickets = support_service.tickets_for_conversation(conversation_id)
         feedback = feedback_service.feedback_for_conversation(conversation_id)
         rows.append({
             "conversation_id": conversation_id,
-            "channel": summary["channel"],
+            "channel": row_channel,
+            "customer_name": _customer_name(conversation_id, row_channel, tickets, feedback),
             "started_at": _when(summary["started_at"]),
             "last_at": _when(summary["last_at"]),
             "message_count": summary["message_count"],
             "last_message": summary["last_message"],
             "order_count": len(orders_service.order_numbers_for_conversation(conversation_id)),
-            "ticket_count": len(support_service.tickets_for_conversation(conversation_id)),
+            "ticket_count": len(tickets),
             "feedback_count": len(feedback),
             "piece_count": orders_service.pieces_ordered_in_conversation(conversation_id),
             # A checkout link that was never paid - a sale that nearly happened.
@@ -107,7 +116,10 @@ async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     return {
         "conversation_id": conversation_id,
         "channel": conversation["channel"],
-        "messages": transcript,
+        "customer_name": _customer_name(conversation_id, conversation["channel"], tickets, feedback),
+        "owner_active": conversation["owner_active"],
+        "taken_over_at": _when(conversation["taken_over_at"]),
+        "messages": [_message_row(message) for message in transcript],
         "orders": [_order_row(order) for order in orders],
         # Told apart from "no orders", which is a different fact the owner may act on.
         "orders_readable": orders_readable,
@@ -164,6 +176,41 @@ def _order_row(order) -> Dict[str, Any]:
     }
 
 
+def _customer_name(conversation_id: str, channel: str, tickets, feedback) -> str:
+    """Best available name for this conversation's title - never blank.
+
+    Instagram carries a real handle; everything else only has a name if the customer
+    gave one while filing a ticket or leaving feedback. Resolved once here rather than
+    in the frontend, so both the list and the detail panel agree and neither has to
+    duplicate the fallback.
+    """
+    if channel == "instagram":
+        username = engagement_service.username_for_conversation(conversation_id)
+        if username:
+            return "@" + username
+    for source in (tickets, feedback):
+        for item in source:
+            if item.customer_name:
+                return item.customer_name
+    return "عميل " + conversation_id[:8]
+
+
+def _message_row(message: Dict[str, Any]) -> Dict[str, Any]:
+    """A transcript row plus who actually wrote it.
+
+    ``role`` alone can't tell a bot reply from an owner's own reply - both are stored as
+    ROLE_MODEL so the model's own history stays a clean back-and-forth (see
+    chat/repository.py's OWNER_PROVIDER). ``provider`` is what disambiguates it here.
+    """
+    if message["role"] == "user":
+        author = "customer"
+    elif message.get("provider") == "owner":
+        author = "owner"
+    else:
+        author = "bot"
+    return {"role": message["role"], "author": author, "content": message["content"]}
+
+
 def _worst(feedback) -> Optional[str]:
     """The sentiment worth noticing in a list, if there is one."""
     for wanted in ("negative", "neutral", "positive"):
@@ -178,3 +225,30 @@ def _safely(read, what: str, conversation_id: str, default):
     except Exception as exc:  # noqa: BLE001 - one broken column, not a broken page
         logger.warning("Could not read %s for conversation %s: %s", what, conversation_id, exc)
         return default
+
+
+async def reply(conversation_id: str, text: str) -> Dict[str, Any]:
+    """Send the owner's own reply into an Instagram conversation, and pause the bot.
+
+    Instagram only, for now - the web widget has no push channel to deliver a reply
+    through outside its own request/response cycle. ``engagement.service`` owns the
+    actual send and only stores the message once it has confirmed Instagram received
+    it, so this never reports success for a message the customer never got.
+    """
+    conversation = chat_service.get_conversation(conversation_id)
+    if conversation is None or conversation["channel"] != "instagram":
+        return {"error": "not_found"}
+    text = text.strip()
+    if not text:
+        return {"error": "empty"}
+    sent = await engagement_service.send_owner_reply(conversation_id, text)
+    return {"sent": True} if sent else {"error": "delivery_failed"}
+
+
+def resume(conversation_id: str) -> Dict[str, Any]:
+    """Hand an Instagram conversation back to the bot."""
+    conversation = chat_service.get_conversation(conversation_id)
+    if conversation is None or conversation["channel"] != "instagram":
+        return {"error": "not_found"}
+    chat_service.resume_bot(conversation_id)
+    return {"resumed": True}

@@ -10,6 +10,8 @@ not worked around here.
 ``admin_sessions`` outright, and no other module may implement its own login or touch
 those tables.
 
-``admin.conversations`` is read-only in this version — no send/reply capability, and
-nothing here should be built in anticipation of one.
+``admin.conversations`` is read-only for every channel except one write path: replying
+to and taking over an Instagram conversation. See
+``app/modules/admin/conversations/__init__.py`` for why Instagram only, and
+``app/modules/chat/agent.py`` for how the bot pauses once the owner has taken over.
 """

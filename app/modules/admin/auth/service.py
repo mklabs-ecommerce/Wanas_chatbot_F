@@ -6,8 +6,7 @@ the job. The stored form carries its own parameters (``scrypt$n$r$p$salt$hash``)
 future change to the cost factor does not invalidate hashes already on disk.
 
 A session token is a random 32-byte URL-safe string handed to the caller exactly once,
-at login; only its SHA-256 is ever persisted, which mirrors the reasoning
-``modules/dashboard`` uses for comparing its shared token in constant time.
+at login; only its SHA-256 is ever persisted.
 
 Role checks live here, not in the router: ``require_owner`` is a plain function so a
 future internal caller (a script, a test) gets the same rule the API enforces.

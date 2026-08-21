@@ -492,20 +492,20 @@ async def test_an_old_link_at_the_same_price_is_still_reused(shopify, catalog):
 
 async def test_the_owner_can_see_a_link_that_was_never_paid(shopify, catalog):
     """Otherwise a customer who reached a checkout and stopped is invisible."""
-    from app.modules.dashboard import service as dashboard_service
+    from app.modules.admin.conversations import service as admin_conversations_service
     from app.modules.chat import repository as chat_repository
 
     cid = chat_repository.ensure_conversation(None, channel="web")
     chat_repository.add_message(cid, chat_repository.ROLE_USER, "عايز أدفع أونلاين")
     await orders_service.create_draft_order(_items(), conversation_id=cid)
 
-    row = dashboard_service.overview()["conversations"][0]
+    row = admin_conversations_service.list_conversations(None)["conversations"][0]
     assert row["unpaid_link_count"] == 1
     assert row["order_count"] == 0
 
 
 async def test_a_paid_link_stops_counting_as_unpaid(monkeypatch, shopify, catalog):
-    from app.modules.dashboard import service as dashboard_service
+    from app.modules.admin.conversations import service as admin_conversations_service
     from app.modules.chat import repository as chat_repository
 
     cid = chat_repository.ensure_conversation(None, channel="web")
@@ -514,7 +514,7 @@ async def test_a_paid_link_stops_counting_as_unpaid(monkeypatch, shopify, catalo
     _paid(monkeypatch, shopify)
     await orders_service.payment_news(cid)
 
-    row = dashboard_service.overview()["conversations"][0]
+    row = admin_conversations_service.list_conversations(None)["conversations"][0]
     assert row["unpaid_link_count"] == 0
     assert row["order_count"] == 1
 
