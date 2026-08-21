@@ -51,6 +51,35 @@ starts from an empty database, so `create_all()` alone gives it every column alr
 Don't make this function bilingual; if Postgres ever needs real migrations, that is
 Alembic's job, not this one's.
 
+### Deployment (Railway)
+
+Two services in the `confident-success` Railway project: `backend` (this repo, built from
+the root `Dockerfile`) and `Postgres-9Svg` (Railway's Postgres template), linked by
+`backend`'s `DATABASE_URL=${{Postgres-9Svg.DATABASE_URL}}` variable reference rather than
+a pasted connection string, so a Postgres credential rotation needs no redeploy of the
+other service. `backend` is connected straight to the `main` branch on GitHub — a push
+there is what deploys, not a local `railway up`.
+
+**One service, not two, on purpose.** The owner asked for the dashboard as its own
+Railway service; that was reverted after finding it would mean reversing the "same-origin
+by design, no CORS" decision above the owner-dashboard section — the dashboard's
+`vite.config.ts` `base: '/admin/'` and its hardcoded `fetch('/admin/api' + path)` both
+assume it is served by the same app it's calling. Rather than add CORS to an admin API to
+satisfy a service-count preference, the `Dockerfile` is multi-stage: it builds the
+dashboard in a `node` stage and copies `dist/` into the `python` stage that runs
+`uvicorn`, so the deployed container serves `/admin` exactly the way local dev does.
+
+**Why a Dockerfile instead of Railway's Nixpacks auto-detect.** `dashboard/dist` is
+gitignored (it's a build artifact), so a plain "detect Python, run it" builder would ship
+a backend with nothing at `/admin`. The Dockerfile's `COPY --from=dashboard-build` makes
+the frontend build a required, reproducible step of the backend's own image rather than
+something a developer has to remember to run first.
+
+**The startup log redacts the database URL** (`database._redacted_url()`) — logging it
+raw was harmless against a local SQLite file path and became a live Postgres password
+leaking into Railway's build log the moment Postgres was wired in. Caught by reading that
+log right after the first deploy, not by review.
+
 ## Architecture
 
 One FastAPI process, internally a modular monolith. A request flows:
