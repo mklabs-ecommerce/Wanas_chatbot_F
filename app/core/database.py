@@ -61,6 +61,15 @@ def get_session() -> Iterator[Session]:
         session.close()
 
 
+def _redacted_url() -> str:
+    """The configured URL with any password stripped, safe to write to a log.
+
+    ``_url`` carries a live Postgres password in production - logging it verbatim once
+    put that password in Railway's build log for anyone with log access to read.
+    """
+    return engine.url.render_as_string(hide_password=True)
+
+
 def init_db() -> None:
     """Create any tables that don't exist yet.
 
@@ -73,7 +82,7 @@ def init_db() -> None:
     tables = sorted(Base.metadata.tables)
     logger.info(
         "Database ready at %s (%d table(s): %s)",
-        _url,
+        _redacted_url(),
         len(tables),
         ", ".join(tables) if tables else "none registered yet",
     )
