@@ -1,0 +1,12 @@
+.env
+.env.example
+data/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+tests/
+dashboard/node_modules/
+dashboard/dist/
+.railway/
